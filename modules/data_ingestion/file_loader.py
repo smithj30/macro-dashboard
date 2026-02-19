@@ -3,10 +3,12 @@ CSV and Excel file upload support with automatic date column detection.
 """
 
 import io
+from typing import Optional
+
 import pandas as pd
 
 
-def _detect_date_column(df: pd.DataFrame) -> str | None:
+def _detect_date_column(df: pd.DataFrame) -> Optional[str]:
     """
     Try to find a column that looks like a date.
     Checks column names first (heuristic), then tries parsing each column.
