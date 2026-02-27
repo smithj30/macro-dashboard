@@ -12,7 +12,13 @@ and lets the user filter by region.
 """
 
 import io
+import json
+import os
+from datetime import datetime, timezone
+
 import pandas as pd
+import requests
+import streamlit as st
 
 
 # Metadata columns that appear before the date columns in Zillow CSVs
@@ -92,3 +98,182 @@ def get_region_series(zillow_data: dict, region_name: str, value_col: str = "val
     subset.index.name = "date"
     subset = subset.rename(columns={value_col: region_name})
     return subset
+
+
+# ── Download / Cache functions ───────────────────────────────────────────────
+
+_DEFAULT_CACHE_DIR = "data/zillow_cache"
+
+
+@st.cache_data(ttl=86400)
+def download_zillow_csv(url: str, cache_dir: str = _DEFAULT_CACHE_DIR) -> pd.DataFrame:
+    """Download a Zillow CSV from URL, cache locally, return as DataFrame."""
+    os.makedirs(cache_dir, exist_ok=True)
+    filename = url.rsplit("/", 1)[-1].split("?")[0]  # strip query params
+    local_path = os.path.join(cache_dir, filename)
+    meta_path = local_path + ".meta.json"
+
+    resp = requests.get(url, timeout=60)
+    resp.raise_for_status()
+
+    with open(local_path, "wb") as f:
+        f.write(resp.content)
+
+    meta = {
+        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "url": url,
+        "filename": filename,
+    }
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    return pd.read_csv(io.BytesIO(resp.content))
+
+
+def download_datasets(entries: list, cache_dir: str = _DEFAULT_CACHE_DIR,
+                      progress_callback=None) -> list:
+    """
+    Bulk download from a list of registry entries.
+
+    Returns list of result dicts: {entry, success, error, row_count}.
+    Calls optional progress_callback(i, total) after each download.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    results = []
+    total = len(entries)
+    for i, entry in enumerate(entries):
+        try:
+            df = download_zillow_csv(entry["url"], cache_dir=cache_dir)
+            results.append({
+                "entry": entry,
+                "success": True,
+                "error": None,
+                "row_count": len(df),
+            })
+        except Exception as exc:
+            results.append({
+                "entry": entry,
+                "success": False,
+                "error": str(exc),
+                "row_count": 0,
+            })
+        if progress_callback:
+            progress_callback(i + 1, total)
+    return results
+
+
+def get_cached_datasets(cache_dir: str = _DEFAULT_CACHE_DIR) -> list:
+    """
+    Scan cache_dir for downloaded CSVs with companion .meta.json files.
+
+    Returns list of {filename, downloaded_at, size_bytes, url}.
+    """
+    if not os.path.isdir(cache_dir):
+        return []
+    results = []
+    for fname in sorted(os.listdir(cache_dir)):
+        if not fname.endswith(".csv"):
+            continue
+        csv_path = os.path.join(cache_dir, fname)
+        meta_path = csv_path + ".meta.json"
+        if not os.path.isfile(meta_path):
+            continue
+        with open(meta_path) as f:
+            meta = json.load(f)
+        results.append({
+            "filename": fname,
+            "downloaded_at": meta.get("downloaded_at", ""),
+            "size_bytes": os.path.getsize(csv_path),
+            "url": meta.get("url", ""),
+        })
+    return results
+
+
+def is_cache_stale(meta_path: str) -> bool:
+    """
+    Check if a cached dataset is stale.
+
+    Zillow updates monthly around the 16th. Cache is stale if downloaded_at
+    is before the 16th of the current month and today is past the 16th.
+    """
+    if not os.path.isfile(meta_path):
+        return True
+    with open(meta_path) as f:
+        meta = json.load(f)
+    downloaded_str = meta.get("downloaded_at", "")
+    if not downloaded_str:
+        return True
+    downloaded = datetime.fromisoformat(downloaded_str)
+    now = datetime.now(timezone.utc)
+    # If today is past the 16th, cache is stale if downloaded before the 16th of this month
+    if now.day >= 16:
+        cutoff = datetime(now.year, now.month, 16, tzinfo=timezone.utc)
+        return downloaded < cutoff
+    return False
+
+
+def _any_cache_stale(cache_dir: str = _DEFAULT_CACHE_DIR) -> bool:
+    """Check if any cached dataset is stale."""
+    if not os.path.isdir(cache_dir):
+        return False
+    for fname in os.listdir(cache_dir):
+        if fname.endswith(".meta.json"):
+            if is_cache_stale(os.path.join(cache_dir, fname)):
+                return True
+    return False
+
+
+def _latest_download_date(cache_dir: str = _DEFAULT_CACHE_DIR) -> str:
+    """Return the most recent downloaded_at date string, or empty."""
+    cached = get_cached_datasets(cache_dir)
+    if not cached:
+        return ""
+    dates = [c["downloaded_at"] for c in cached if c["downloaded_at"]]
+    return max(dates) if dates else ""
+
+
+def load_zillow_series(entry: dict, regions: list = None,
+                       cache_dir: str = _DEFAULT_CACHE_DIR) -> pd.DataFrame:
+    """
+    Load a Zillow dataset from cache (or download if not cached),
+    then extract region time series into a merged DataFrame.
+
+    Args:
+        entry: registry entry dict with 'url' and 'filename' keys
+        regions: list of region names to include (None = all)
+        cache_dir: local cache directory
+
+    Returns:
+        DataFrame with DatetimeIndex and columns = region names.
+    """
+    filename = entry["filename"] + ".csv"
+    local_path = os.path.join(cache_dir, filename)
+
+    # Load from cache if available, otherwise download
+    if os.path.isfile(local_path):
+        zillow_data = load_zillow_csv(local_path)
+    else:
+        download_zillow_csv(entry["url"], cache_dir=cache_dir)
+        zillow_data = load_zillow_csv(local_path)
+
+    available_regions = zillow_data["regions"]
+    if regions:
+        target_regions = [r for r in regions if r in available_regions]
+    else:
+        target_regions = available_regions
+
+    if not target_regions:
+        return pd.DataFrame()
+
+    dfs = []
+    for region in target_regions:
+        series_df = get_region_series(zillow_data, region)
+        dfs.append(series_df)
+
+    if len(dfs) == 1:
+        return dfs[0]
+
+    merged = dfs[0]
+    for df in dfs[1:]:
+        merged = merged.join(df, how="outer")
+    return merged

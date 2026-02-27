@@ -12,6 +12,7 @@ import numpy as np
 from views.reindustrialization import render as render_reindustrialization
 from views.dynamic_dashboard import render as render_dynamic
 from views.dashboard_builder import render as render_builder
+from views.zillow_browser import render as render_zillow_browser
 
 from modules.config.dashboard_config import list_dynamic_dashboards
 from modules.config.chart_catalog import (
@@ -35,6 +36,14 @@ from modules.data_ingestion.fred_loader import (
 from modules.data_ingestion.file_loader import load_uploaded_file
 from modules.data_ingestion.web_scraper import scrape_table, scrape_tables
 from modules.data_ingestion.zillow_loader import load_zillow_csv, get_region_series
+from modules.data_ingestion.bea_loader import (
+    get_bea_key_status,
+    list_bea_tables,
+    fetch_bea_table,
+    last_n_years,
+    SUPPORTED_DATASETS,
+    ANNUAL_ONLY_DATASETS,
+)
 
 from modules.data_processing.transforms import (
     year_over_year,
@@ -96,7 +105,7 @@ _dynamic_dashboards = list_dynamic_dashboards()
 _dynamic_page_map = {cfg["title"]: cfg for cfg in _dynamic_dashboards}
 
 _DASHBOARD_PAGES = ["US Reindustrialization"] + [cfg["title"] for cfg in _dynamic_dashboards]
-_TOOL_PAGES = ["Data Sources", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Regression & Analysis", "Data Table"]
+_TOOL_PAGES = ["Data Sources", "Zillow Browser", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Regression & Analysis", "Data Table"]
 
 if "page" not in st.session_state:
     st.session_state.page = "US Reindustrialization"
@@ -265,10 +274,10 @@ elif page == "Dashboard Builder":
 
 elif page == "Data Sources":
     st.title("Data Sources")
-    st.markdown("Load data from FRED, file uploads, web scraping, or Zillow CSVs.")
+    st.markdown("Load data from FRED, BEA, file uploads, web scraping, or Zillow CSVs.")
 
-    tab_fred, tab_file, tab_web, tab_zillow = st.tabs(
-        ["🏦 FRED", "📁 File Upload", "🌐 Web Scraper", "🏠 Zillow"]
+    tab_fred, tab_bea, tab_file, tab_web, tab_zillow = st.tabs(
+        ["🏦 FRED", "🏛️ BEA", "📁 File Upload", "🌐 Web Scraper", "🏠 Zillow"]
     )
 
     # ── FRED ─────────────────────────────────────────────────────────────────
@@ -390,6 +399,164 @@ elif page == "Data Sources":
                         st.line_chart(df)
                     except Exception as e:
                         st.error(f"Failed to load series: {e}")
+
+    # ── BEA ──────────────────────────────────────────────────────────────────
+    with tab_bea:
+        st.subheader("BEA (Bureau of Economic Analysis)")
+
+        _bea_key, _bea_err = get_bea_key_status()
+        if _bea_err:
+            st.warning(
+                f"**BEA API key not configured.**\n\n{_bea_err}\n\n"
+                "Copy `.env.example` to `.env` and add your key."
+            )
+
+        # ── Dataset + Frequency ───────────────────────────────────────────
+        _bea_ds_col, _bea_freq_col = st.columns([2, 1])
+        with _bea_ds_col:
+            _bea_dataset = st.selectbox(
+                "Dataset",
+                options=list(SUPPORTED_DATASETS.keys()),
+                format_func=lambda k: f"{k} — {SUPPORTED_DATASETS[k]}",
+                key="bea_dataset",
+            )
+        with _bea_freq_col:
+            _bea_freq_opts = ["A"] if _bea_dataset in ANNUAL_ONLY_DATASETS else ["Q", "A"]
+            _bea_freq = st.selectbox(
+                "Frequency",
+                options=_bea_freq_opts,
+                format_func=lambda f: {"Q": "Quarterly", "A": "Annual"}[f],
+                key="bea_freq",
+            )
+
+        # ── Table browser ─────────────────────────────────────────────────
+        @st.cache_data(ttl=86400, show_spinner=False)
+        def _bea_get_tables(dataset: str) -> pd.DataFrame:
+            return list_bea_tables(dataset)
+
+        if _bea_key:
+            try:
+                with st.spinner("Loading table list…"):
+                    _bea_tables_df = _bea_get_tables(_bea_dataset)
+            except Exception as _e:
+                st.error(f"Could not load table list: {_e}")
+                _bea_tables_df = pd.DataFrame(columns=["TableName", "Description"])
+        else:
+            _bea_tables_df = pd.DataFrame(columns=["TableName", "Description"])
+
+        _bea_filter = st.text_input(
+            "Filter tables",
+            placeholder="e.g. GDP, investment, price index…",
+            key="bea_filter",
+        )
+
+        _bea_display = _bea_tables_df.copy()
+        if _bea_filter.strip():
+            _mask = _bea_display["Description"].str.contains(
+                _bea_filter.strip(), case=False, na=False
+            )
+            _bea_display = _bea_display[_mask].reset_index(drop=True)
+
+        st.markdown(f"**{len(_bea_display)} table(s)** — click a row to select it:")
+        _bea_table_event = st.dataframe(
+            _bea_display,
+            use_container_width=True,
+            height=220,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="bea_table_grid",
+        )
+        _bea_sel_rows = _bea_table_event.selection.rows
+
+        # Auto-preview when a row is selected
+        _bea_prev_sel = st.session_state.get("_bea_prev_table_sel", [])
+        if _bea_sel_rows != _bea_prev_sel:
+            st.session_state["_bea_prev_table_sel"] = _bea_sel_rows
+            st.session_state.pop("bea_preview", None)  # clear stale preview
+
+        _bea_selected_table = None
+        if _bea_sel_rows and not _bea_display.empty:
+            _bea_row = _bea_display.iloc[_bea_sel_rows[0]]
+            _bea_selected_table = _bea_row["TableName"]
+            st.info(f"**{_bea_selected_table}** — {_bea_row['Description']}")
+
+        # ── Preview lines ─────────────────────────────────────────────────
+        st.markdown("---")
+
+        if _bea_selected_table:
+            _bea_cached = st.session_state.get("bea_preview", {})
+            _need_preview = (
+                _bea_cached.get("table") != _bea_selected_table
+                or _bea_cached.get("dataset") != _bea_dataset
+                or _bea_cached.get("freq") != _bea_freq
+            )
+
+            if _need_preview and _bea_key:
+                with st.spinner(f"Previewing {_bea_selected_table}…"):
+                    try:
+                        _prev_df = fetch_bea_table(
+                            _bea_dataset, _bea_selected_table, _bea_freq,
+                            years=last_n_years(5),
+                        )
+                        st.session_state["bea_preview"] = {
+                            "table": _bea_selected_table,
+                            "dataset": _bea_dataset,
+                            "freq": _bea_freq,
+                            "columns": list(_prev_df.columns),
+                            "sample": _prev_df.tail(4),
+                        }
+                    except Exception as _e:
+                        st.error(f"Preview failed: {_e}")
+
+            _bea_preview = st.session_state.get("bea_preview", {})
+            if _bea_preview.get("table") == _bea_selected_table:
+                _all_lines = _bea_preview["columns"]
+                st.markdown(f"**{len(_all_lines)} line(s) available** — select which to load:")
+
+                # Sample data preview
+                with st.expander("Sample data (last 4 periods)", expanded=False):
+                    st.dataframe(_bea_preview["sample"], use_container_width=True)
+
+                _bea_sel_lines = st.multiselect(
+                    "Lines to load",
+                    options=_all_lines,
+                    default=_all_lines[:min(5, len(_all_lines))],
+                    key="bea_lines_sel",
+                )
+
+                _bea_name = st.text_input(
+                    "Dataset name",
+                    value=_bea_selected_table,
+                    key="bea_ds_name",
+                    placeholder="Name for the loaded dataset",
+                )
+
+                _bea_can_load = bool(_bea_sel_lines and _bea_name.strip())
+                if st.button(
+                    "Load Selected Lines",
+                    key="bea_load_btn",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not _bea_can_load,
+                ):
+                    with st.spinner(f"Loading {_bea_selected_table} (all years)…"):
+                        try:
+                            _full_df = fetch_bea_table(
+                                _bea_dataset, _bea_selected_table, _bea_freq, years="ALL"
+                            )
+                            _out_df = _full_df[
+                                [c for c in _bea_sel_lines if c in _full_df.columns]
+                            ]
+                            add_to_catalog(_bea_name.strip(), _out_df)
+                            st.success(
+                                f"Loaded **{_bea_name.strip()}** — "
+                                f"{len(_out_df):,} rows × {len(_out_df.columns)} series."
+                            )
+                            st.line_chart(_out_df)
+                        except Exception as _e:
+                            st.error(f"Load failed: {_e}")
+        else:
+            st.caption("Select a table above to preview its contents.")
 
     # ── File Upload ──────────────────────────────────────────────────────────
     with tab_file:
@@ -523,6 +690,14 @@ elif page == "Data Sources":
                         add_to_catalog(entry_name, series_df)
                         added.append(entry_name)
                     st.success(f"Added {len(added)} region(s) to catalog.")
+
+
+# =============================================================================
+# PAGE: ZILLOW BROWSER
+# =============================================================================
+
+elif page == "Zillow Browser":
+    render_zillow_browser()
 
 
 # =============================================================================
