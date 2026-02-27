@@ -1,0 +1,640 @@
+"""
+Generic renderer for builder-created (dynamic) dashboards.
+
+Called by app.py as:  render_dynamic(config_dict)
+"""
+
+from __future__ import annotations
+
+import copy
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import streamlit as st
+
+from modules.config.dashboard_config import save_config
+from modules.config.chart_catalog import get_item as catalog_get_item
+from modules.data_ingestion.fred_loader import load_fred_series
+from modules.data_processing.transforms import (
+    month_over_month,
+    rolling_mean,
+    year_over_year,
+)
+from modules.visualization.charts import apply_clip_arrows, time_series_chart
+from modules.visualization.news_widget import render_news_section
+
+
+# ---------------------------------------------------------------------------
+# Layout aliases: normalise old "left"/"right" → "half"
+# ---------------------------------------------------------------------------
+
+_LAYOUT_WIDTHS: Dict[str, float] = {
+    "full": 1.0,
+    "half": 0.5,
+    "third": 1 / 3,
+    "quarter": 0.25,
+    # Backward compat
+    "left": 0.5,
+    "right": 0.5,
+}
+
+
+# ---------------------------------------------------------------------------
+# Cached FRED loaders
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_series_fred(series_id: str, years_back: int, transform: str) -> pd.DataFrame:
+    """Load a FRED series and apply the requested transform."""
+    start = (datetime.today() - timedelta(days=years_back * 365)).strftime("%Y-%m-%d")
+    df = load_fred_series(series_id, start_date=start)
+    if df.empty:
+        return df
+    series = df.iloc[:, 0]
+    if transform == "yoy":
+        series = year_over_year(series)
+    elif transform == "mom":
+        series = month_over_month(series)
+    elif transform == "rolling_12":
+        series = rolling_mean(series, 12)
+    return series.to_frame()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_card_fred(series_id: str) -> pd.DataFrame:
+    """Load a FRED series for card display (no transform, full history)."""
+    return load_fred_series(series_id)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _yoy_pct(series: pd.Series) -> Optional[float]:
+    """Year-over-year percent change using 12-period lookback."""
+    if len(series) < 13:
+        return None
+    try:
+        prev = series.iloc[-13]
+        curr = series.iloc[-1]
+        if prev == 0:
+            return None
+        return (curr / prev - 1) * 100
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Per-section settings controls (dynamic version)
+# ---------------------------------------------------------------------------
+
+
+def _section_controls_dynamic(
+    sec: Dict[str, Any],
+    config: Dict[str, Any],
+) -> None:
+    """Settings expander for a dynamic section; saves updated config on submit."""
+    section_id = sec.get("id", "")
+    allowed_types = ["line", "bar", "area"]
+    current_type = sec.get("chart_type", "line")
+    if current_type not in allowed_types:
+        current_type = "line"
+
+    y_axis = sec.get("y_axis") or {}
+    y_axis2 = sec.get("y_axis2") or {}
+    has_secondary = any(s.get("axis") == 2 for s in sec.get("series", []))
+
+    with st.expander("⚙ Chart Settings", expanded=False):
+        new_chart_type = st.selectbox(
+            "Chart type",
+            options=allowed_types,
+            index=allowed_types.index(current_type),
+            key=f"dyn_ct_{section_id}",
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            en_ymin = st.checkbox(
+                "Set Y min",
+                value=y_axis.get("min") is not None,
+                key=f"dyn_en_ymin_{section_id}",
+            )
+            y_min_val = st.number_input(
+                "Y min",
+                value=float(y_axis["min"]) if y_axis.get("min") is not None else 0.0,
+                key=f"dyn_ymin_{section_id}",
+                disabled=not en_ymin,
+            )
+        with col_b:
+            en_ymax = st.checkbox(
+                "Set Y max",
+                value=y_axis.get("max") is not None,
+                key=f"dyn_en_ymax_{section_id}",
+            )
+            y_max_val = st.number_input(
+                "Y max",
+                value=float(y_axis["max"]) if y_axis.get("max") is not None else 100.0,
+                key=f"dyn_ymax_{section_id}",
+                disabled=not en_ymax,
+            )
+
+        if has_secondary:
+            col_c, col_d = st.columns(2)
+            with col_c:
+                en_ymin2 = st.checkbox(
+                    "Set Y2 min",
+                    value=y_axis2.get("min") is not None,
+                    key=f"dyn_en_ymin2_{section_id}",
+                )
+                y_min2_val = st.number_input(
+                    "Y2 min",
+                    value=float(y_axis2["min"]) if y_axis2.get("min") is not None else 0.0,
+                    key=f"dyn_ymin2_{section_id}",
+                    disabled=not en_ymin2,
+                )
+            with col_d:
+                en_ymax2 = st.checkbox(
+                    "Set Y2 max",
+                    value=y_axis2.get("max") is not None,
+                    key=f"dyn_en_ymax2_{section_id}",
+                )
+                y_max2_val = st.number_input(
+                    "Y2 max",
+                    value=float(y_axis2["max"]) if y_axis2.get("max") is not None else 100.0,
+                    key=f"dyn_ymax2_{section_id}",
+                    disabled=not en_ymax2,
+                )
+        else:
+            en_ymin2 = en_ymax2 = False
+            y_min2_val = y_max2_val = 0.0
+
+        if st.button("Save settings", key=f"dyn_save_{section_id}"):
+            new_cfg = copy.deepcopy(config)
+            for s in new_cfg.get("sections", []):
+                if s.get("id") == section_id:
+                    s["chart_type"] = new_chart_type
+                    s["y_axis"] = {
+                        "min": float(y_min_val) if en_ymin else None,
+                        "max": float(y_max_val) if en_ymax else None,
+                    }
+                    if has_secondary:
+                        s["y_axis2"] = {
+                            "min": float(y_min2_val) if en_ymin2 else None,
+                            "max": float(y_max2_val) if en_ymax2 else None,
+                        }
+                    break
+            save_config(new_cfg)
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Chart section renderer (uses st.* directly; call inside 'with col:' for columns)
+# ---------------------------------------------------------------------------
+
+
+def _render_chart_section(
+    sec: Dict[str, Any],
+    config: Dict[str, Any],
+) -> None:
+    """Load series, build chart, apply clip arrows, render controls."""
+    st.subheader(sec.get("title", "Chart"))
+
+    series_defs = sec.get("series", [])
+    if not series_defs:
+        st.info("No series configured for this section.")
+        return
+
+    load_errors: List[str] = []
+    frames: List[pd.DataFrame] = []
+    dual_axis_col: Optional[str] = None
+
+    for sdef in series_defs:
+        source = sdef.get("source", "fred")
+        sid = sdef.get("series_id", "")
+        label = sdef.get("label") or sid
+        transform = sdef.get("transform", "none")
+        years_back = int(sdef.get("years_back", 10))
+        axis = int(sdef.get("axis", 1))
+
+        if source == "fred" and sid:
+            try:
+                df = _load_series_fred(sid, years_back, transform)
+                if not df.empty:
+                    df.columns = [label]
+                    frames.append(df)
+                    if axis == 2:
+                        dual_axis_col = label
+            except Exception as e:
+                load_errors.append(f"{label}: {e}")
+
+    if load_errors:
+        for err in load_errors:
+            st.warning(err)
+
+    if not frames:
+        st.warning("Could not load any series for this section.")
+        _section_controls_dynamic(sec, config)
+        return
+
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.join(f, how="outer")
+
+    y_axis = sec.get("y_axis") or {}
+    y_axis2 = sec.get("y_axis2") or {}
+    y_min = y_axis.get("min")
+    y_max = y_axis.get("max")
+    y_min2 = y_axis2.get("min")
+    y_max2 = y_axis2.get("max")
+    chart_type = sec.get("chart_type", "line")
+
+    fig = time_series_chart(
+        merged,
+        title=sec.get("title", ""),
+        dual_axis_col=dual_axis_col,
+        chart_type=chart_type,
+        y_min=y_min,
+        y_max=y_max,
+        y_min2=y_min2,
+        y_max2=y_max2,
+    )
+
+    if y_min is not None or y_max is not None:
+        primary_indices = [
+            i for i, t in enumerate(fig.data)
+            if hasattr(t, "name") and t.name != dual_axis_col
+        ]
+        apply_clip_arrows(fig, y_min, y_max, trace_indices=primary_indices)
+
+    if dual_axis_col and (y_min2 is not None or y_max2 is not None):
+        secondary_indices = [
+            i for i, t in enumerate(fig.data)
+            if hasattr(t, "name") and t.name == dual_axis_col
+        ]
+        apply_clip_arrows(fig, y_min2, y_max2, trace_indices=secondary_indices)
+
+    _section_controls_dynamic(sec, config)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Catalog chart renderer (uses st.* directly; call inside 'with col:' for columns)
+# ---------------------------------------------------------------------------
+
+
+def _render_catalog_chart_section(
+    sec: Dict[str, Any],
+    config: Dict[str, Any],
+) -> None:
+    """Load a saved catalog chart item and render it."""
+    catalog_id = sec.get("catalog_id", "")
+    item_id = sec.get("item_id", "")
+    item = catalog_get_item(catalog_id, item_id)
+
+    if item is None:
+        st.warning(f"Saved chart not found (catalog: {catalog_id}, item: {item_id})")
+        return
+
+    title = sec.get("title_override") or item.get("title", "Chart")
+    st.subheader(title)
+
+    series_defs = item.get("series", [])
+    if not series_defs:
+        st.info("No series configured for this chart.")
+        return
+
+    load_errors: List[str] = []
+    frames: List[pd.DataFrame] = []
+    dual_axis_col: Optional[str] = None
+    years_back_default = 10
+
+    # First pass: build a name→df map for non-computed series so computed
+    # series can reference them
+    raw_data: Dict[str, pd.Series] = {}
+
+    for sdef in series_defs:
+        source = sdef.get("source", "fred")
+        sid = sdef.get("series_id", "")
+        label = sdef.get("label") or sid
+        transform = sdef.get("transform", "none")
+        years_back = int(sdef.get("years_back", years_back_default))
+        axis = int(sdef.get("axis", 1))
+
+        try:
+            if source == "fred" and sid:
+                df = _load_series_fred(sid, years_back, transform)
+                if not df.empty:
+                    s = df.iloc[:, 0].rename(label)
+                    raw_data[label] = s
+                    frames.append(s.to_frame())
+                    if axis == 2:
+                        dual_axis_col = label
+
+            elif source == "catalog":
+                # col often IS a FRED series ID (e.g. "CPIAUCSL")
+                col_name = sdef.get("col", "")
+                fred_id = col_name if col_name else ""
+                if fred_id:
+                    df = _load_series_fred(fred_id, years_back, transform)
+                    if not df.empty:
+                        s = df.iloc[:, 0].rename(label)
+                        raw_data[label] = s
+                        frames.append(s.to_frame())
+                        if axis == 2:
+                            dual_axis_col = label
+                    else:
+                        load_errors.append(f"{label}: no data for {fred_id}")
+                else:
+                    load_errors.append(f"{label}: session-only data unavailable")
+
+            elif source == "computed":
+                series_a = sdef.get("series_a", "")
+                series_b = sdef.get("series_b", "")
+                op = sdef.get("op", "div")
+
+                # Try to resolve each operand: check raw_data first, then try FRED
+                def _resolve(name: str) -> Optional[pd.Series]:
+                    if name in raw_data:
+                        return raw_data[name]
+                    # Try loading as FRED series ID
+                    try:
+                        df_tmp = _load_series_fred(name, years_back_default, "none")
+                        if not df_tmp.empty:
+                            s_tmp = df_tmp.iloc[:, 0]
+                            raw_data[name] = s_tmp
+                            return s_tmp
+                    except Exception:
+                        pass
+                    return None
+
+                sa = _resolve(series_a)
+                sb = _resolve(series_b)
+
+                if sa is not None and sb is not None:
+                    sa_a, sb_a = sa.align(sb, join="inner")
+                    if op == "div":
+                        result = sa_a / sb_a
+                    elif op == "sub":
+                        result = sa_a - sb_a
+                    elif op == "add":
+                        result = sa_a + sb_a
+                    elif op == "mul":
+                        result = sa_a * sb_a
+                    else:  # pct_diff
+                        result = (sa_a - sb_a) / sb_a * 100
+                    result = result.rename(label)
+                    raw_data[label] = result
+                    frames.append(result.to_frame())
+                    if axis == 2:
+                        dual_axis_col = label
+                else:
+                    load_errors.append(
+                        f"computed '{label}': could not resolve "
+                        f"'{series_a}' or '{series_b}'"
+                    )
+
+        except Exception as e:
+            load_errors.append(f"{label}: {e}")
+
+    if load_errors:
+        for err in load_errors:
+            st.warning(err)
+
+    if not frames:
+        st.warning("Could not load any series for this chart.")
+        return
+
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.join(f, how="outer")
+
+    y_axis = item.get("y_axis") or {}
+    y_axis2 = item.get("y_axis2") or {}
+    y_min = y_axis.get("min")
+    y_max = y_axis.get("max")
+    y_min2 = y_axis2.get("min")
+    y_max2 = y_axis2.get("max")
+
+    # Use per-series chart_type from first series as the chart type
+    chart_type = "line"
+    if series_defs:
+        chart_type = series_defs[0].get("chart_type", "line")
+
+    # Build per-series types map
+    series_types = {
+        sdef.get("label") or sdef.get("series_id", ""): sdef.get("chart_type", "line")
+        for sdef in series_defs
+    }
+
+    fig = time_series_chart(
+        merged,
+        title=title,
+        dual_axis_col=dual_axis_col,
+        chart_type=chart_type,
+        series_types=series_types,
+        y_min=y_min,
+        y_max=y_max,
+        y_min2=y_min2,
+        y_max2=y_max2,
+        show_legend=item.get("show_legend", True),
+    )
+
+    if y_min is not None or y_max is not None:
+        primary_indices = [
+            i for i, t in enumerate(fig.data)
+            if hasattr(t, "name") and t.name != dual_axis_col
+        ]
+        apply_clip_arrows(fig, y_min, y_max, trace_indices=primary_indices)
+
+    if dual_axis_col and (y_min2 is not None or y_max2 is not None):
+        secondary_indices = [
+            i for i, t in enumerate(fig.data)
+            if hasattr(t, "name") and t.name == dual_axis_col
+        ]
+        apply_clip_arrows(fig, y_min2, y_max2, trace_indices=secondary_indices)
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Card row renderer (uses st.* directly, creates its own columns)
+# ---------------------------------------------------------------------------
+
+
+def _render_card_row_section(sec: Dict[str, Any]) -> None:
+    """Render a row of metric cards from catalog items."""
+    cards = sec.get("cards", [])
+    if not cards:
+        st.warning("Card row has no cards configured.")
+        return
+
+    cols = st.columns(len(cards))
+    for col, ref in zip(cols, cards):
+        item = catalog_get_item(ref.get("catalog_id", ""), ref.get("item_id", ""))
+        if item is None:
+            col.warning("Card not found")
+            continue
+
+        card_title = item.get("title", "")
+        delta_type = item.get("delta_type", "none")
+        fmt = item.get("value_format", ",.2f")
+        sfx = item.get("value_suffix", "")
+        pfx = item.get("value_prefix", "")  # backward compat
+
+        # ── Resolve data series ──────────────────────────────────────────────
+        # New format: dataset_name + column from session catalog
+        series: Optional[pd.Series] = None
+        dataset_name = item.get("dataset_name", "")
+        column = item.get("column", "")
+        if dataset_name and column:
+            session_cat = st.session_state.get("catalog", {})
+            df_cat = session_cat.get(dataset_name)
+            if df_cat is not None and column in df_cat.columns:
+                series = df_cat[column].dropna()
+                if not isinstance(series.index, pd.DatetimeIndex):
+                    try:
+                        series.index = pd.to_datetime(series.index)
+                    except Exception:
+                        pass
+
+        # Fallback: FRED series_id (old format or explicit fred_series_id)
+        if series is None or series.empty:
+            fred_id = item.get("fred_series_id") or item.get("series_id") or ""
+            if fred_id:
+                try:
+                    df_fred = _load_card_fred(fred_id)
+                    if not df_fred.empty:
+                        series = df_fred.iloc[:, 0].dropna()
+                except Exception:
+                    pass
+
+        if series is None or series.empty:
+            source_hint = f"`{dataset_name}/{column}`" if dataset_name else "no data source"
+            col.warning(f"{card_title or 'Card'}: no data ({source_hint})")
+            continue
+
+        value = series.iloc[-1]
+
+        # Delta
+        delta_str: Optional[str] = None
+        if delta_type == "yoy":
+            yoy = _yoy_pct(series)
+            if yoy is not None:
+                delta_str = f"{yoy:+.2f}% YoY"
+        elif delta_type == "period":
+            if len(series) >= 2:
+                chg = series.iloc[-1] - series.iloc[-2]
+                delta_str = f"{chg:+.4g} vs prior period"
+
+        # Format value
+        try:
+            val_str = f"{pfx}{format(value, fmt)}{sfx}"
+        except Exception:
+            val_str = f"{pfx}{value}{sfx}"
+
+        col.metric(card_title or (column or "Value"), val_str, delta_str)
+
+        # Backward compat: show release dates if present (old format)
+        prior = item.get("prior_release") or ""
+        nxt = item.get("next_release") or ""
+        if prior or nxt:
+            col.caption(f"Prior: {prior or '—'}  ·  Next: {nxt or '—'}")
+
+
+# ---------------------------------------------------------------------------
+# Grid layout helpers
+# ---------------------------------------------------------------------------
+
+
+def _group_into_rows(sections: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """
+    Group sections into display rows.
+
+    Rules:
+    - card_row sections always form their own single-item full-width row.
+    - Sections with layout=="full" form their own single-item row.
+    - Consecutive non-full sections are collected into one row.
+    """
+    rows: List[List[Dict[str, Any]]] = []
+    pending: List[Dict[str, Any]] = []
+
+    for sec in sections:
+        if sec.get("type") == "card_row":
+            if pending:
+                rows.append(pending)
+                pending = []
+            rows.append([sec])
+        elif sec.get("layout", "full") == "full":
+            if pending:
+                rows.append(pending)
+                pending = []
+            rows.append([sec])
+        else:
+            pending.append(sec)
+
+    if pending:
+        rows.append(pending)
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Main render entry point
+# ---------------------------------------------------------------------------
+
+
+def render(config: Dict[str, Any]) -> None:
+    """Render a fully config-driven dashboard."""
+    title = config.get("title", "Dashboard")
+    description = config.get("description", "")
+    news_query = config.get("news_query", "")
+
+    st.title(title)
+    if description:
+        st.caption(description)
+
+    sections = config.get("sections", [])
+    if not sections:
+        st.info("This dashboard has no sections yet. Edit it in Dashboard Builder.")
+        return
+
+    rows = _group_into_rows(sections)
+
+    for row in rows:
+        if len(row) == 1:
+            sec = row[0]
+            sec_type = sec.get("type", "chart")
+            if sec_type == "chart":
+                _render_chart_section(sec, config)
+            elif sec_type == "catalog_chart":
+                _render_catalog_chart_section(sec, config)
+            elif sec_type == "card_row":
+                _render_card_row_section(sec)
+            elif sec_type == "news":
+                render_news_section(
+                    sec.get("query") or news_query,
+                    title=sec.get("title", "Latest News"),
+                )
+        else:
+            # Multi-column row
+            cols = st.columns(len(row))
+            for col, sec in zip(cols, row):
+                sec_type = sec.get("type", "chart")
+                with col:
+                    if sec_type == "chart":
+                        _render_chart_section(sec, config)
+                    elif sec_type == "catalog_chart":
+                        _render_catalog_chart_section(sec, config)
+                    elif sec_type == "news":
+                        render_news_section(
+                            sec.get("query") or news_query,
+                            title=sec.get("title", "Latest News"),
+                        )
+
+    # Dashboard-level news feed (if no explicit news section)
+    has_news_section = any(s.get("type") == "news" for s in sections)
+    if news_query and not has_news_section:
+        render_news_section(news_query, title="Latest News")

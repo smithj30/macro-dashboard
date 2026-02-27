@@ -3,10 +3,14 @@ Plotly chart builders for the macro dashboard.
 All charts return go.Figure instances ready for st.plotly_chart().
 """
 
-import pandas as pd
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
 import numpy as np
-import plotly.graph_objects as go
+import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
@@ -28,8 +32,15 @@ def _get_color(i: int) -> str:
 def time_series_chart(
     df: pd.DataFrame,
     title: str = "Time Series",
-    dual_axis_col: str = None,
+    dual_axis_col: Optional[str] = None,
     height: int = 500,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+    y_min2: Optional[float] = None,
+    y_max2: Optional[float] = None,
+    chart_type: str = "line",
+    series_types: Optional[Dict[str, str]] = None,
+    show_legend: bool = True,
 ) -> go.Figure:
     """
     Interactive multi-series time series chart.
@@ -40,31 +51,60 @@ def time_series_chart(
     title         : chart title
     dual_axis_col : if provided, this column is plotted on a secondary y-axis
     height        : figure height in pixels
+    y_min / y_max : primary y-axis range limits (None = auto)
+    y_min2 / y_max2 : secondary y-axis range limits (None = auto)
+    chart_type    : default chart type "line" | "bar" | "area"
+    series_types  : per-series type overrides {col_name: type}; falls back to chart_type
+    show_legend   : whether to display the legend
     """
     cols = list(df.columns)
 
-    has_dual = dual_axis_col and dual_axis_col in cols
+    has_dual = bool(dual_axis_col and dual_axis_col in cols)
     fig = make_subplots(specs=[[{"secondary_y": has_dual}]])
 
     for i, col in enumerate(cols):
         series = df[col].dropna()
         is_secondary = has_dual and col == dual_axis_col
-        fig.add_trace(
-            go.Scatter(
+        color = _get_color(i)
+
+        stype = (series_types or {}).get(col, chart_type)
+
+        if stype == "bar":
+            trace = go.Bar(
+                x=series.index,
+                y=series.values,
+                name=col,
+                marker_color=color,
+                hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.4f}<extra>" + col + "</extra>",
+            )
+        elif stype == "area":
+            trace = go.Scatter(
                 x=series.index,
                 y=series.values,
                 name=col,
                 mode="lines",
-                line=dict(color=_get_color(i), width=2),
+                fill="tozeroy",
+                fillcolor=color.replace("rgb", "rgba").replace(")", ", 0.15)") if color.startswith("rgb") else color,
+                line=dict(color=color, width=2),
                 hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.4f}<extra>" + col + "</extra>",
-            ),
-            secondary_y=is_secondary,
-        )
+            )
+        else:  # "line" (default)
+            trace = go.Scatter(
+                x=series.index,
+                y=series.values,
+                name=col,
+                mode="lines",
+                line=dict(color=color, width=2),
+                hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.4f}<extra>" + col + "</extra>",
+            )
+
+        fig.add_trace(trace, secondary_y=is_secondary)
 
     fig.update_layout(
         title=title,
         height=height,
         hovermode="x unified",
+        showlegend=show_legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=dict(
             rangeslider=dict(visible=True),
@@ -78,6 +118,101 @@ def time_series_chart(
         primary_cols = [c for c in cols if c != dual_axis_col]
         fig.update_yaxes(title_text=" / ".join(primary_cols), secondary_y=False)
         fig.update_yaxes(title_text=dual_axis_col, secondary_y=True)
+
+    # Apply axis range constraints
+    primary_range = [y_min, y_max] if (y_min is not None or y_max is not None) else None
+    if primary_range is not None:
+        if has_dual:
+            fig.update_yaxes(range=primary_range, secondary_y=False)
+        else:
+            fig.update_layout(yaxis=dict(range=primary_range))
+
+    if has_dual:
+        secondary_range = [y_min2, y_max2] if (y_min2 is not None or y_max2 is not None) else None
+        if secondary_range is not None:
+            fig.update_yaxes(range=secondary_range, secondary_y=True)
+
+    return fig
+
+
+def apply_clip_arrows(
+    fig: go.Figure,
+    y_min: Optional[float],
+    y_max: Optional[float],
+    trace_indices: Optional[List[int]] = None,
+) -> go.Figure:
+    """
+    Add triangle-marker traces to indicate where data extends beyond visible axis range.
+
+    Parameters
+    ----------
+    fig           : existing Figure (modified in-place and returned)
+    y_min / y_max : axis limits currently applied; None means no limit on that side
+    trace_indices : which trace indices to inspect (default: all Scatter traces)
+    """
+    if y_min is None and y_max is None:
+        return fig
+
+    traces = fig.data
+    if trace_indices is None:
+        target_indices = [i for i, t in enumerate(traces) if isinstance(t, go.Scatter)]
+    else:
+        target_indices = trace_indices
+
+    for idx in target_indices:
+        trace = traces[idx]
+        if not isinstance(trace, go.Scatter):
+            continue
+
+        xs = list(trace.x) if trace.x is not None else []
+        ys = list(trace.y) if trace.y is not None else []
+        if not xs or not ys:
+            continue
+
+        color = (
+            trace.line.color
+            if trace.line and trace.line.color
+            else _get_color(idx)
+        )
+
+        above_x, below_x = [], []
+        for x_val, y_val in zip(xs, ys):
+            if y_val is None:
+                continue
+            try:
+                y_float = float(y_val)
+            except (TypeError, ValueError):
+                continue
+            if y_max is not None and y_float > y_max:
+                above_x.append(x_val)
+            if y_min is not None and y_float < y_min:
+                below_x.append(x_val)
+
+        if above_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=above_x,
+                    y=[y_max] * len(above_x),
+                    mode="markers",
+                    marker=dict(symbol="triangle-up", size=10, color=color),
+                    showlegend=False,
+                    hovertemplate="Value exceeds axis max<extra></extra>",
+                    name="_clip_above",
+                )
+            )
+
+        if below_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=below_x,
+                    y=[y_min] * len(below_x),
+                    mode="markers",
+                    marker=dict(symbol="triangle-down", size=10, color=color),
+                    showlegend=False,
+                    hovertemplate="Value below axis min<extra></extra>",
+                    name="_clip_below",
+                )
+            )
 
     return fig
 

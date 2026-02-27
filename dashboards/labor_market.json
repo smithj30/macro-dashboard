@@ -1,0 +1,18 @@
+{
+  "id": "labor_market",
+  "title": "Labor Market",
+  "description": "Charts and data points that indicate the health of the labor market",
+  "type": "dynamic",
+  "news_query": "",
+  "created_at": "2026-02-26T17:29:21.295920",
+  "sections": [
+    {
+      "id": "sec_f02693c5",
+      "type": "catalog_chart",
+      "layout": "full",
+      "catalog_id": "labor_force_data",
+      "item_id": "item_e89a6b04",
+      "title_override": null
+    }
+  ]
+}

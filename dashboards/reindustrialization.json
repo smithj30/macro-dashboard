@@ -1,0 +1,54 @@
+{
+  "id": "reindustrialization",
+  "title": "US Reindustrialization",
+  "type": "static",
+  "news_query": "US manufacturing reshoring industrialization",
+  "sections": {
+    "indpro": {
+      "chart_type": "line",
+      "y_axis": {
+        "min": 95.0,
+        "max": null
+      }
+    },
+    "investment": {
+      "chart_type": "bar",
+      "y_axis": {
+        "min": null,
+        "max": null
+      },
+      "y_axis2": {
+        "min": null,
+        "max": null
+      }
+    },
+    "surveys": {
+      "chart_type": "line",
+      "y_axis": {
+        "min": null,
+        "max": null
+      }
+    },
+    "forward": {
+      "chart_type": "line",
+      "y_axis": {
+        "min": null,
+        "max": null
+      }
+    },
+    "employment": {
+      "chart_type": "line",
+      "y_axis": {
+        "min": null,
+        "max": null
+      }
+    },
+    "reshoring": {
+      "chart_type": "bar",
+      "y_axis": {
+        "min": null,
+        "max": null
+      }
+    }
+  }
+}
