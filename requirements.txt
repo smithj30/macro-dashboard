@@ -11,3 +11,6 @@ statsmodels==0.14.4
 scipy==1.13.1
 openpyxl==3.1.5
 xlrd==2.0.1
+feedparser==6.0.11
+pyyaml==6.0.2
+pyarrow==18.1.0

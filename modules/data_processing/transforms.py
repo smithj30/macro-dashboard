@@ -128,6 +128,54 @@ def rolling_mean(series: pd.Series, window: int) -> pd.Series:
     return result
 
 
+# ---------------------------------------------------------------------------
+# New v2 transforms
+# ---------------------------------------------------------------------------
+
+def index_to_date(series: pd.Series, base_date: str = None) -> pd.Series:
+    """
+    Rebase a series to 100 at the given date (or the first date if not specified).
+
+    Useful for comparing series with different scales on the same chart.
+    """
+    if base_date:
+        base_ts = pd.Timestamp(base_date)
+        # Find the closest date
+        idx = series.index.get_indexer([base_ts], method="nearest")[0]
+        base_val = series.iloc[idx]
+    else:
+        base_val = series.dropna().iloc[0]
+
+    if base_val == 0:
+        result = series * 0
+    else:
+        result = (series / base_val) * 100
+
+    result.name = f"{series.name} (indexed)"
+    return result
+
+
+def diff(series: pd.Series, periods: int = 1) -> pd.Series:
+    """Compute the first difference (change between consecutive periods)."""
+    result = series.diff(periods=periods)
+    result.name = f"{series.name} (diff)"
+    return result
+
+
+def cumulative(series: pd.Series) -> pd.Series:
+    """Compute cumulative sum of the series."""
+    result = series.cumsum()
+    result.name = f"{series.name} (cumulative)"
+    return result
+
+
+def log_transform(series: pd.Series) -> pd.Series:
+    """Compute natural log of the series. Handles non-positive values with NaN."""
+    result = np.log(series.where(series > 0))
+    result.name = f"{series.name} (log)"
+    return result
+
+
 def resample_series(series: pd.Series, freq: str, agg: str = "mean") -> pd.Series:
     """
     Resample a series to a target frequency.

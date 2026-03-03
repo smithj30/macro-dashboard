@@ -7,12 +7,20 @@
   "created_at": "2026-02-26T17:29:21.295920",
   "sections": [
     {
-      "id": "sec_f02693c5",
+      "id": "sec_45310647",
       "type": "catalog_chart",
-      "layout": "full",
+      "layout": "half",
       "catalog_id": "labor_force_data",
       "item_id": "item_e89a6b04",
       "title_override": null
+    },
+    {
+      "id": "sec_c472f42d",
+      "type": "catalog_chart",
+      "layout": "half",
+      "catalog_id": "labor_force_data",
+      "item_id": "item_261bad62",
+      "title_override": "Unemployment Rate"
     }
   ]
 }

@@ -15,6 +15,7 @@ import streamlit as st
 
 from modules.config.dashboard_config import save_config
 from modules.config.chart_catalog import get_item as catalog_get_item
+from modules.config.feed_catalog import get_feed
 from modules.data_ingestion.fred_loader import load_fred_series
 from modules.data_processing.transforms import (
     month_over_month,
@@ -66,6 +67,37 @@ def _load_series_fred(series_id: str, years_back: int, transform: str) -> pd.Dat
 def _load_card_fred(series_id: str) -> pd.DataFrame:
     """Load a FRED series for card display (no transform, full history)."""
     return load_fred_series(series_id)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_series_feed(
+    provider_name: str, series_id: str, feed_kwargs_json: str, years_back: int, transform: str
+) -> pd.DataFrame:
+    """Load a registered feed series via provider and apply transform."""
+    import json
+    from providers import get_provider as _gp
+
+    try:
+        provider = _gp(provider_name)
+        kwargs = json.loads(feed_kwargs_json) if feed_kwargs_json and feed_kwargs_json != "{}" else {}
+        df = provider.fetch_series(series_id, **kwargs)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        series = df.iloc[:, 0]
+        # Apply time window filter
+        if years_back and isinstance(df.index, pd.DatetimeIndex):
+            cutoff = datetime.today() - timedelta(days=years_back * 365)
+            series = series[series.index >= cutoff]
+        # Apply transform
+        if transform == "yoy":
+            series = year_over_year(series)
+        elif transform == "mom":
+            series = month_over_month(series)
+        elif transform in ("rolling_12", "rolling"):
+            series = rolling_mean(series, 12)
+        return series.to_frame()
+    except Exception:
+        return pd.DataFrame()
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +382,29 @@ def _render_catalog_chart_section(
                 else:
                     load_errors.append(f"{label}: session-only data unavailable")
 
+            elif source == "feed":
+                import json
+                feed_id = sdef.get("feed_id", "")
+                if feed_id:
+                    feed = get_feed(feed_id)
+                    if feed:
+                        kwargs_json = json.dumps(feed.get("kwargs", {}))
+                        df = _load_series_feed(
+                            feed["provider"], feed["series_id"], kwargs_json, years_back, transform
+                        )
+                        if not df.empty:
+                            s = df.iloc[:, 0].rename(label)
+                            raw_data[label] = s
+                            frames.append(s.to_frame())
+                            if axis == 2:
+                                dual_axis_col = label
+                        else:
+                            load_errors.append(f"{label}: no data from feed '{feed.get('name', feed_id)}'")
+                    else:
+                        load_errors.append(f"{label}: feed '{feed_id}' not found in catalog")
+                else:
+                    load_errors.append(f"{label}: no feed_id configured")
+
             elif source == "computed":
                 series_a = sdef.get("series_a", "")
                 series_b = sdef.get("series_b", "")
@@ -595,6 +650,23 @@ def render(config: Dict[str, Any]) -> None:
     st.title(title)
     if description:
         st.caption(description)
+
+    # Dashboard toolbar
+    _tb_edit, _tb_refresh, _tb_spacer = st.columns([1, 1, 8])
+    with _tb_edit:
+        if st.button("✏ Edit", key=f"dyn_edit_{config.get('id', '')}", help="Edit in Dashboard Builder"):
+            st.session_state.builder_draft = config
+            st.session_state.builder_edit_id = config.get("id")
+            st.session_state.builder_step = 2
+            st.session_state["b_pending_series"] = []
+            st.session_state.page = "Dashboard Builder"
+            st.rerun()
+    with _tb_refresh:
+        if st.button("↺ Refresh", key=f"dyn_refresh_{config.get('id', '')}", help="Reload all data"):
+            _load_series_fred.clear()
+            _load_card_fred.clear()
+            _load_series_feed.clear()
+            st.rerun()
 
     sections = config.get("sections", [])
     if not sections:

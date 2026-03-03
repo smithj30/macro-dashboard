@@ -13,6 +13,7 @@ from views.reindustrialization import render as render_reindustrialization
 from views.dynamic_dashboard import render as render_dynamic
 from views.dashboard_builder import render as render_builder
 from views.zillow_browser import render as render_zillow_browser
+from views.feed_manager import render as render_feed_manager
 
 from modules.config.dashboard_config import list_dynamic_dashboards
 from modules.config.chart_catalog import (
@@ -25,6 +26,8 @@ from modules.config.chart_catalog import (
     upsert_item,
     delete_item as catalog_delete_item,
 )
+from modules.config.feed_catalog import get_feed as get_feed_by_id
+from components.feed_picker import feed_picker
 
 # ── Module imports ────────────────────────────────────────────────────────────
 from modules.data_ingestion.fred_loader import (
@@ -66,6 +69,7 @@ from modules.visualization.charts import (
     residual_plot,
     residual_histogram,
     apply_clip_arrows,
+    apply_recession_shading,
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -105,7 +109,7 @@ _dynamic_dashboards = list_dynamic_dashboards()
 _dynamic_page_map = {cfg["title"]: cfg for cfg in _dynamic_dashboards}
 
 _DASHBOARD_PAGES = ["US Reindustrialization"] + [cfg["title"] for cfg in _dynamic_dashboards]
-_TOOL_PAGES = ["Data Sources", "Zillow Browser", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Regression & Analysis", "Data Table"]
+_TOOL_PAGES = ["Data Sources", "Feed Manager", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Regression & Analysis", "Data Table"]
 
 if "page" not in st.session_state:
     st.session_state.page = "US Reindustrialization"
@@ -274,7 +278,7 @@ elif page == "Dashboard Builder":
 
 elif page == "Data Sources":
     st.title("Data Sources")
-    st.markdown("Load data from FRED, BEA, file uploads, web scraping, or Zillow CSVs.")
+    st.markdown("Load data from FRED, BEA, file uploads, web scraping, or browse Zillow datasets.")
 
     tab_fred, tab_bea, tab_file, tab_web, tab_zillow = st.tabs(
         ["🏦 FRED", "🏛️ BEA", "📁 File Upload", "🌐 Web Scraper", "🏠 Zillow"]
@@ -629,76 +633,16 @@ elif page == "Data Sources":
 
     # ── Zillow ────────────────────────────────────────────────────────────────
     with tab_zillow:
-        st.subheader("Zillow Data")
-        st.caption(
-            "Upload a Zillow public CSV export (ZHVI, ZORI, etc.). "
-            "Download from [zillow.com/research/data](https://www.zillow.com/research/data/)."
-        )
+        render_zillow_browser()
 
-        zillow_file = st.file_uploader(
-            "Upload Zillow CSV",
-            type=["csv"],
-            key="zillow_uploader",
-        )
-
-        value_col_name = st.text_input(
-            "Value column label",
-            value="value",
-            key="zillow_value_col",
-        )
-
-        if st.button("Parse Zillow File", key="zillow_parse_btn", use_container_width=True):
-            if not zillow_file:
-                st.warning("Upload a Zillow CSV first.")
-            else:
-                with st.spinner("Parsing Zillow CSV…"):
-                    try:
-                        data = load_zillow_csv(zillow_file, value_col_name=value_col_name)
-                        st.session_state.zillow_cache = data
-                        st.success(
-                            f"Parsed {len(data['wide']):,} regions × "
-                            f"{len(data['date_columns'])} time periods."
-                        )
-                    except Exception as e:
-                        st.error(f"Failed to parse: {e}")
-
-        if st.session_state.zillow_cache:
-            data = st.session_state.zillow_cache
-            regions = data["regions"]
-
-            selected_regions = st.multiselect(
-                "Select regions to add to catalog",
-                options=regions,
-                default=regions[:3] if len(regions) >= 3 else regions,
-                key="zillow_regions",
-            )
-
-            zillow_prefix = st.text_input(
-                "Name prefix for catalog entries",
-                value="Zillow",
-                key="zillow_prefix",
-            )
-
-            if st.button("Add to Catalog", key="zillow_add_btn", use_container_width=True):
-                if not selected_regions:
-                    st.warning("Select at least one region.")
-                else:
-                    added = []
-                    for region in selected_regions:
-                        series_df = get_region_series(data, region, value_col=value_col_name)
-                        entry_name = f"{zillow_prefix} — {region}"
-                        add_to_catalog(entry_name, series_df)
-                        added.append(entry_name)
-                    st.success(f"Added {len(added)} region(s) to catalog.")
 
 
 # =============================================================================
-# PAGE: ZILLOW BROWSER
+# PAGE: FEED MANAGER
 # =============================================================================
 
-elif page == "Zillow Browser":
-    render_zillow_browser()
-
+elif page == "Feed Manager":
+    render_feed_manager()
 
 # =============================================================================
 # PAGE: CHART BUILDER
@@ -789,27 +733,43 @@ elif page == "Chart Builder":
                                     st.session_state["cb_use_y_max2"] = _ya2.get("max") is not None
                                     st.session_state["cb_y_max2"] = _ya2.get("max") or 100.0
                                     st.session_state["cb_show_legend"] = _loaded.get("show_legend", True)
-                                    # Repopulate cb_data for FRED series (best-effort)
+                                    # Repopulate cb_data for FRED and feed series (best-effort)
                                     from modules.data_ingestion.fred_loader import load_fred_series as _lfs
                                     from modules.data_processing.transforms import year_over_year as _yoy_fn
                                     from modules.data_processing.transforms import month_over_month as _mom_fn
                                     from modules.data_processing.transforms import rolling_mean as _rm_fn
+                                    from providers import get_provider as _lp
                                     _new_data = {}
                                     for _sd in _loaded.get("series", []):
-                                        if _sd.get("source") == "fred" and _sd.get("series_id"):
-                                            try:
+                                        _tr = _sd.get("transform", "none")
+                                        _label = _sd["label"]
+                                        try:
+                                            if _sd.get("source") == "fred" and _sd.get("series_id"):
                                                 _df_tmp = _lfs(_sd["series_id"])
                                                 _s_tmp = _df_tmp.iloc[:, 0]
-                                                _tr = _sd.get("transform", "none")
                                                 if _tr == "yoy":
                                                     _s_tmp = _yoy_fn(_s_tmp)
                                                 elif _tr == "mom":
                                                     _s_tmp = _mom_fn(_s_tmp)
                                                 elif _tr == "rolling":
                                                     _s_tmp = _rm_fn(_s_tmp, _sd.get("rolling_window", 12))
-                                                _new_data[_sd["label"]] = _s_tmp
-                                            except Exception:
-                                                pass
+                                                _new_data[_label] = _s_tmp
+                                            elif _sd.get("source") == "feed" and _sd.get("feed_id"):
+                                                _feed = get_feed_by_id(_sd["feed_id"])
+                                                if _feed:
+                                                    _f_prov = _lp(_feed["provider"])
+                                                    _f_df = _f_prov.fetch_series(_feed["series_id"], **_feed.get("kwargs", {}))
+                                                    if _f_df is not None and not _f_df.empty:
+                                                        _s_tmp = _f_df.iloc[:, 0]
+                                                        if _tr == "yoy":
+                                                            _s_tmp = _yoy_fn(_s_tmp)
+                                                        elif _tr == "mom":
+                                                            _s_tmp = _mom_fn(_s_tmp)
+                                                        elif _tr == "rolling":
+                                                            _s_tmp = _rm_fn(_s_tmp, _sd.get("rolling_window", 12))
+                                                        _new_data[_label] = _s_tmp
+                                        except Exception:
+                                            pass
                                     st.session_state.cb_data = _new_data
                                 else:
                                     st.session_state.cb_card_dataset = _loaded.get("dataset_name", "")
@@ -929,8 +889,8 @@ elif page == "Chart Builder":
 
         st.markdown("---")
 
-        # ── Add Series / Add Computed Series tabs ────────────────────────────
-        tab_add, tab_computed = st.tabs(["Add Series", "Add Computed Series"])
+        # ── Add Series / From Feed / Computed Series tabs ────────────────────
+        tab_add, tab_feed, tab_computed = st.tabs(["From Catalog", "From Feed", "Computed"])
 
         with tab_add:
             # Series come from loaded datasets only (load data in Data Sources first)
@@ -1005,6 +965,87 @@ elif page == "Chart Builder":
                                 st.rerun()
                     else:
                         st.warning("No numeric columns in selected dataset.")
+
+        with tab_feed:
+            from providers import get_provider as _get_feed_prov
+            from modules.config.feed_catalog import list_feeds as _list_feeds_cb
+            _feed_list = _list_feeds_cb()
+            if not _feed_list:
+                st.info("No feeds registered yet. Add feeds in the **Feed Manager** first.")
+            else:
+                _fp_sel = feed_picker(
+                    key="cb_feed_picker",
+                    label="Select a registered feed",
+                    allow_none=True,
+                    help_text="Pick a data feed from the catalog",
+                )
+                if _fp_sel:
+                    _ff_col1, _ff_col2 = st.columns(2)
+                    with _ff_col1:
+                        cb_feed_label = st.text_input(
+                            "Label",
+                            key="cb_feed_label",
+                            placeholder=f"e.g. {_fp_sel.get('name', '')}",
+                        )
+                    with _ff_col2:
+                        cb_feed_transform = st.selectbox(
+                            "Transform",
+                            ["none", "yoy", "mom", "rolling"],
+                            key="cb_feed_transform",
+                        )
+                    _ff_col3, _ff_col4, _ff_col5 = st.columns([2, 1, 1])
+                    with _ff_col3:
+                        cb_feed_type = st.selectbox(
+                            "Chart type", ["line", "bar", "area"], key="cb_feed_chart_type"
+                        )
+                    with _ff_col4:
+                        cb_feed_axis = st.selectbox("Axis", [1, 2], key="cb_feed_axis")
+                    with _ff_col5:
+                        cb_feed_rolling = st.number_input(
+                            "Window",
+                            min_value=2,
+                            max_value=120,
+                            value=12,
+                            key="cb_feed_rolling",
+                            disabled=(cb_feed_transform != "rolling"),
+                        )
+
+                    if st.button("+ Add Feed Series", key="cb_feed_add", use_container_width=True):
+                        _label = (cb_feed_label.strip() or _fp_sel.get("name", _fp_sel["series_id"]))
+                        if _label in cb_data:
+                            st.warning(f"A series named '{_label}' already exists.")
+                        else:
+                            # Load data from provider
+                            try:
+                                _f_prov = _get_feed_prov(_fp_sel["provider"])
+                                _f_kwargs = _fp_sel.get("kwargs", {})
+                                _f_df = _f_prov.fetch_series(_fp_sel["series_id"], **_f_kwargs)
+                                if _f_df is not None and not _f_df.empty:
+                                    _f_s = _f_df.iloc[:, 0].rename(_label)
+                                    if cb_feed_transform == "yoy":
+                                        _f_s = year_over_year(_f_s)
+                                    elif cb_feed_transform == "mom":
+                                        _f_s = month_over_month(_f_s)
+                                    elif cb_feed_transform == "rolling":
+                                        _f_s = rolling_mean(_f_s, int(cb_feed_rolling))
+                                    cb_data[_label] = _f_s
+                                    cb_series.append({
+                                        "label": _label,
+                                        "chart_type": cb_feed_type,
+                                        "axis": cb_feed_axis,
+                                        "source": "feed",
+                                        "feed_id": _fp_sel["id"],
+                                        "series_id": None,
+                                        "catalog_name": None,
+                                        "col": None,
+                                        "transform": cb_feed_transform,
+                                        "rolling_window": int(cb_feed_rolling),
+                                    })
+                                    st.rerun()
+                                else:
+                                    st.warning(f"No data returned for feed '{_fp_sel.get('name', '')}'.")
+                            except Exception as _fe:
+                                st.error(f"Failed to load feed data: {_fe}")
 
         with tab_computed:
             if len(cb_series) < 2:
@@ -1191,6 +1232,30 @@ elif page == "Chart Builder":
                 _cat_title = _sv_cat_sel if _sv_cat_options else _sv_cat_id
                 st.toast(f"Saved to {_cat_title}")
                 st.rerun()
+
+            # Save As New (only when editing an existing item)
+            if st.session_state.cb_item_id and _sv_can_save:
+                if st.button(
+                    "Save As New",
+                    key="cb_saveas_chart_btn",
+                    help="Save a copy without overwriting the original",
+                ):
+                    _item_dict_new = {
+                        "type": "chart",
+                        "title": _sv_item_title.strip() or st.session_state.get("cb_chart_title", "Untitled"),
+                        "chart_subtype": "Time Series",
+                        "y_axis": {"min": y_min, "max": y_max},
+                        "y_axis2": {"min": y_min2, "max": y_max2},
+                        "show_legend": st.session_state.get("cb_show_legend", True),
+                        "series": list(cb_series),
+                        # no "id" — forces upsert_item to create a new item
+                    }
+                    _saved_id = upsert_item(_sv_cat_id, _item_dict_new)
+                    st.session_state.cb_item_id = _saved_id
+                    st.session_state.cb_catalog_id = _sv_cat_id
+                    _cat_title = _sv_cat_sel if _sv_cat_options else _sv_cat_id
+                    st.toast(f"Saved as new to {_cat_title}")
+                    st.rerun()
 
     # ── Correlation Heatmap ──────────────────────────────────────────────────
     elif _cb_item_type == "Chart" and chart_type == "Correlation Heatmap":

@@ -26,6 +26,69 @@ def _get_color(i: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# NBER Recession Dates (peak → trough)
+# Source: https://www.nber.org/research/data/us-business-cycle-expansions-and-contractions
+# ---------------------------------------------------------------------------
+
+NBER_RECESSIONS = [
+    ("1948-11-01", "1949-10-01"),
+    ("1953-07-01", "1954-05-01"),
+    ("1957-08-01", "1958-04-01"),
+    ("1960-04-01", "1961-02-01"),
+    ("1969-12-01", "1970-11-01"),
+    ("1973-11-01", "1975-03-01"),
+    ("1980-01-01", "1980-07-01"),
+    ("1981-07-01", "1982-11-01"),
+    ("1990-07-01", "1991-03-01"),
+    ("2001-03-01", "2001-11-01"),
+    ("2007-12-01", "2009-06-01"),
+    ("2020-02-01", "2020-04-01"),
+]
+
+
+def apply_recession_shading(
+    fig: go.Figure,
+    color: str = "rgba(200, 200, 200, 0.25)",
+) -> go.Figure:
+    """
+    Add NBER recession shading bands to a Plotly figure.
+
+    Only draws bands that overlap with the figure's x-axis date range.
+    """
+    # Determine the x-axis range from the traces
+    all_dates = []
+    for trace in fig.data:
+        if trace.x is not None:
+            try:
+                dates = pd.to_datetime(list(trace.x))
+                all_dates.extend([dates.min(), dates.max()])
+            except Exception:
+                continue
+
+    if not all_dates:
+        return fig
+
+    x_min = min(all_dates)
+    x_max = max(all_dates)
+
+    for start, end in NBER_RECESSIONS:
+        rec_start = pd.Timestamp(start)
+        rec_end = pd.Timestamp(end)
+        # Only add if recession overlaps with chart date range
+        if rec_end < x_min or rec_start > x_max:
+            continue
+        fig.add_vrect(
+            x0=rec_start,
+            x1=rec_end,
+            fillcolor=color,
+            layer="below",
+            line_width=0,
+        )
+
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Time Series
 # ---------------------------------------------------------------------------
 

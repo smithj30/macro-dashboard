@@ -12,6 +12,7 @@ Session state keys used:
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -73,7 +74,7 @@ def _step_list() -> None:
         st.info("No custom dashboards yet. Create your first one below.")
     else:
         for cfg in dashboards:
-            col_title, col_edit, col_del = st.columns([5, 1, 1])
+            col_title, col_edit, col_clone, col_del = st.columns([4, 1, 1, 1])
             with col_title:
                 st.markdown(f"**{cfg.get('title', cfg['id'])}**")
                 if cfg.get("description"):
@@ -83,6 +84,14 @@ def _step_list() -> None:
                     st.session_state.builder_draft = cfg
                     st.session_state.builder_edit_id = cfg["id"]
                     _go_step(1)
+            with col_clone:
+                if st.button("Clone", key=f"clone_{cfg['id']}"):
+                    new_cfg = copy.deepcopy(cfg)
+                    new_cfg["id"] = f"{cfg['id']}_copy_{uuid.uuid4().hex[:4]}"
+                    new_cfg["title"] = f"Copy of {cfg.get('title', cfg['id'])}"
+                    new_cfg["created_at"] = datetime.now().isoformat()
+                    save_config(new_cfg)
+                    st.rerun()
             with col_del:
                 if st.button("Delete", key=f"del_{cfg['id']}"):
                     delete_config(cfg["id"])

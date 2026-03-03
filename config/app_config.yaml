@@ -1,0 +1,39 @@
+# Macro Dashboard — Application Configuration
+# API keys remain in .env for security. This file is for app-level settings.
+
+# Data refresh defaults
+refresh:
+  default_schedule: daily    # daily | weekly | monthly | manual
+  ttl_seconds:
+    fred: 1800               # 30 minutes
+    bea: 3600                # 1 hour
+    zillow: 86400            # 24 hours
+    news: 900                # 15 minutes
+    file: 0                  # no TTL for uploaded files
+
+# Chart defaults
+charts:
+  default_height: 500
+  template: plotly_white
+  show_legend: true
+  show_rangeslider: true
+  recession_shading: false
+
+  # Color palette — Plotly qualitative palette name or list of hex colors
+  # Options: Plotly, D3, G10, T10, Set1, Set2, Pastel1, Dark2
+  color_palette: Plotly
+
+# Dashboard defaults
+dashboards:
+  default_layout: half       # full | half | third | quarter
+
+# Cache settings
+cache:
+  directory: data/cache
+  format: parquet             # parquet | csv
+  max_age_days: 30
+
+# Logging
+logging:
+  level: INFO
+  refresh_log: data/refresh_log.json
