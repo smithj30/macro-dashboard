@@ -1,0 +1,18 @@
+{
+  "id": "manufacturing",
+  "title": "Manufacturing",
+  "description": "US Manufacturing activity \u2014 new orders, shipments, and prices",
+  "type": "dynamic",
+  "news_query": "US manufacturing PMI ISM industrial production",
+  "created_at": "2026-03-02T21:55:51.068484",
+  "sections": [
+    {
+      "id": "sec_902c4978",
+      "type": "catalog_chart",
+      "layout": "half",
+      "catalog_id": "manufacturing_charts",
+      "item_id": "item_bc5e8017",
+      "title_override": null
+    }
+  ]
+}

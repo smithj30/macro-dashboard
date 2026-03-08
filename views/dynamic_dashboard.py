@@ -24,6 +24,7 @@ from modules.data_processing.transforms import (
 )
 from modules.visualization.charts import apply_clip_arrows, time_series_chart
 from modules.visualization.news_widget import render_news_section
+from components.chart_renderer import apply_style
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +310,7 @@ def _render_chart_section(
         apply_clip_arrows(fig, y_min2, y_max2, trace_indices=secondary_indices)
 
     _section_controls_dynamic(sec, config)
+    apply_style(fig)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -366,21 +368,32 @@ def _render_catalog_chart_section(
                         dual_axis_col = label
 
             elif source == "catalog":
-                # col often IS a FRED series ID (e.g. "CPIAUCSL")
+                # When col is a valid FRED series ID (e.g. "CPIAUCSL"), we can
+                # reload it from FRED. If the column came from a CSV/BEA/Zillow
+                # dataset the name won't be a FRED ID and loading will fail —
+                # in that case, show a descriptive message instead of a cryptic error.
                 col_name = sdef.get("col", "")
-                fred_id = col_name if col_name else ""
-                if fred_id:
-                    df = _load_series_fred(fred_id, years_back, transform)
-                    if not df.empty:
-                        s = df.iloc[:, 0].rename(label)
-                        raw_data[label] = s
-                        frames.append(s.to_frame())
-                        if axis == 2:
-                            dual_axis_col = label
-                    else:
-                        load_errors.append(f"{label}: no data for {fred_id}")
+                dataset_name = sdef.get("catalog_name", sdef.get("dataset_name", ""))
+                if col_name:
+                    try:
+                        df = _load_series_fred(col_name, years_back, transform)
+                        if not df.empty:
+                            s = df.iloc[:, 0].rename(label)
+                            raw_data[label] = s
+                            frames.append(s.to_frame())
+                            if axis == 2:
+                                dual_axis_col = label
+                        else:
+                            load_errors.append(f"{label}: no data returned for '{col_name}'")
+                    except Exception:
+                        # col is not a FRED series ID — it came from a session-only dataset
+                        load_errors.append(
+                            f"{label}: series '{col_name}' from dataset '{dataset_name}' "
+                            f"is session-only — re-load the dataset from Data Sources and "
+                            f"re-save the chart to restore it."
+                        )
                 else:
-                    load_errors.append(f"{label}: session-only data unavailable")
+                    load_errors.append(f"{label}: session-only data unavailable (no column name stored)")
 
             elif source == "feed":
                 import json
@@ -511,6 +524,7 @@ def _render_catalog_chart_section(
         ]
         apply_clip_arrows(fig, y_min2, y_max2, trace_indices=secondary_indices)
 
+    apply_style(fig)
     st.plotly_chart(fig, use_container_width=True)
 
 

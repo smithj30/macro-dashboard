@@ -10,6 +10,7 @@ from providers.bea_provider import BEAProvider
 from providers.zillow_provider import ZillowProvider
 from providers.file_provider import FileProvider
 from providers.news_provider import NewsProvider
+from providers.computed_provider import ComputedProvider
 
 # Provider registry — keyed by provider name used in feed configs
 PROVIDERS = {
@@ -18,6 +19,7 @@ PROVIDERS = {
     "zillow": ZillowProvider,
     "file": FileProvider,
     "news": NewsProvider,
+    "computed": ComputedProvider,
 }
 
 

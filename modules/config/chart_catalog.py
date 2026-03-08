@@ -126,7 +126,7 @@ def upsert_item(catalog_id: str, item: Dict[str, Any]) -> str:
     """
     cat = load_catalog(catalog_id)
     if cat is None:
-        return ""
+        raise ValueError(f"Chart catalog '{catalog_id}' not found. It may have been deleted.")
 
     now = datetime.now().isoformat()
     items: List[Dict[str, Any]] = cat.get("items", [])

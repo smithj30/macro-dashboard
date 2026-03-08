@@ -5,6 +5,8 @@ All charts return go.Figure instances ready for st.plotly_chart().
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -15,10 +17,37 @@ from plotly.subplots import make_subplots
 
 
 # ---------------------------------------------------------------------------
-# Colour palette
+# KL Brand style — loaded once at module level from config/chart_styles.json
 # ---------------------------------------------------------------------------
 
-COLORS = px.colors.qualitative.Plotly
+_STYLES_PATH = Path(__file__).parent.parent.parent / "config" / "chart_styles.json"
+
+def _load_brand_style():
+    """Load KL brand style config; returns (colorway, template, recession_color)."""
+    try:
+        with open(_STYLES_PATH, "r", encoding="utf-8") as f:
+            styles = json.load(f)
+    except Exception:
+        return px.colors.qualitative.Plotly, "plotly_white", "rgba(200, 200, 200, 0.25)"
+
+    tmpl_dict = styles.get("plotly_template", {})
+    colorway = tmpl_dict.get("layout", {}).get("colorway", px.colors.qualitative.Plotly)
+
+    # Build a full Plotly Template object
+    template = go.layout.Template()
+    layout_dict = tmpl_dict.get("layout", {})
+    template.layout = go.Layout(**layout_dict)
+    data_dict = tmpl_dict.get("data", {})
+    scatter_defaults = data_dict.get("scatter", [{}])
+    if scatter_defaults:
+        line_cfg = scatter_defaults[0].get("line", {})
+        if line_cfg:
+            template.data.scatter = [go.Scatter(line=line_cfg)]
+
+    recession_color = styles.get("recession_shading_color", "rgba(200, 200, 200, 0.25)")
+    return colorway, template, recession_color
+
+COLORS, _KL_TEMPLATE, _KL_RECESSION_COLOR = _load_brand_style()
 
 
 def _get_color(i: int) -> str:
@@ -48,7 +77,7 @@ NBER_RECESSIONS = [
 
 def apply_recession_shading(
     fig: go.Figure,
-    color: str = "rgba(200, 200, 200, 0.25)",
+    color: str = _KL_RECESSION_COLOR,
 ) -> go.Figure:
     """
     Add NBER recession shading bands to a Plotly figure.
@@ -170,10 +199,16 @@ def time_series_chart(
         showlegend=show_legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=dict(
-            rangeslider=dict(visible=True),
+            rangeslider=dict(
+                visible=True,
+                thickness=0.04,
+                bgcolor="#f0f0f0",
+                bordercolor="#cccccc",
+                borderwidth=1,
+            ),
             type="date",
         ),
-        template="plotly_white",
+        template=_KL_TEMPLATE,
         margin=dict(l=60, r=60, t=60, b=40),
     )
 
@@ -312,7 +347,7 @@ def correlation_heatmap(corr_matrix: pd.DataFrame, title: str = "Correlation Mat
 
     fig.update_layout(
         title=title,
-        template="plotly_white",
+        template=_KL_TEMPLATE,
         height=max(400, len(labels) * 60 + 100),
         xaxis=dict(side="bottom"),
         margin=dict(l=80, r=40, t=60, b=80),
@@ -409,7 +444,7 @@ def scatter_chart(
         title=title,
         xaxis_title=x_col,
         yaxis_title=y_col,
-        template="plotly_white",
+        template=_KL_TEMPLATE,
         height=height,
         margin=dict(l=60, r=40, t=60, b=60),
         hovermode="closest",
@@ -448,7 +483,7 @@ def rolling_corr_chart(rolling_corr: pd.Series, title: str = None) -> go.Figure:
         title=title,
         yaxis=dict(range=[-1.1, 1.1], title="Pearson r"),
         xaxis=dict(title="Date", type="date"),
-        template="plotly_white",
+        template=_KL_TEMPLATE,
         height=400,
         margin=dict(l=60, r=40, t=60, b=40),
     )
@@ -485,7 +520,7 @@ def residual_plot(
         title=title,
         xaxis_title="Fitted Values",
         yaxis_title="Residuals",
-        template="plotly_white",
+        template=_KL_TEMPLATE,
         height=400,
         margin=dict(l=60, r=40, t=60, b=40),
     )
@@ -509,7 +544,7 @@ def residual_histogram(residuals: pd.Series, title: str = "Residual Distribution
         title=title,
         xaxis_title="Residual",
         yaxis_title="Count",
-        template="plotly_white",
+        template=_KL_TEMPLATE,
         height=350,
         margin=dict(l=60, r=40, t=60, b=40),
     )

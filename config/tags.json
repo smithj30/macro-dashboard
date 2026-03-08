@@ -1,0 +1,13 @@
+{
+  "tags": [
+    { "name": "labor", "color": "#1f77b4" },
+    { "name": "housing", "color": "#ff7f0e" },
+    { "name": "manufacturing", "color": "#2ca02c" },
+    { "name": "inflation", "color": "#d62728" },
+    { "name": "monetary-policy", "color": "#9467bd" },
+    { "name": "construction", "color": "#8c564b" },
+    { "name": "weekly", "color": "#e377c2" },
+    { "name": "monthly", "color": "#7f7f7f" },
+    { "name": "reindustrialization", "color": "#17becf" }
+  ]
+}

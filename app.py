@@ -12,8 +12,9 @@ import numpy as np
 from views.reindustrialization import render as render_reindustrialization
 from views.dynamic_dashboard import render as render_dynamic
 from views.dashboard_builder import render as render_builder
-from views.zillow_browser import render as render_zillow_browser
 from views.feed_manager import render as render_feed_manager
+from views.tag_manager import render_tag_manager
+from views.data_explorer import render as render_data_explorer
 
 from modules.config.dashboard_config import list_dynamic_dashboards
 from modules.config.chart_catalog import (
@@ -30,23 +31,7 @@ from modules.config.feed_catalog import get_feed as get_feed_by_id
 from components.feed_picker import feed_picker
 
 # ── Module imports ────────────────────────────────────────────────────────────
-from modules.data_ingestion.fred_loader import (
-    get_fred_client,
-    search_fred,
-    load_fred_series,
-    get_series_info,
-)
-from modules.data_ingestion.file_loader import load_uploaded_file
-from modules.data_ingestion.web_scraper import scrape_table, scrape_tables
-from modules.data_ingestion.zillow_loader import load_zillow_csv, get_region_series
-from modules.data_ingestion.bea_loader import (
-    get_bea_key_status,
-    list_bea_tables,
-    fetch_bea_table,
-    last_n_years,
-    SUPPORTED_DATASETS,
-    ANNUAL_ONLY_DATASETS,
-)
+from modules.data_ingestion.fred_loader import load_fred_series
 
 from modules.data_processing.transforms import (
     year_over_year,
@@ -71,6 +56,7 @@ from modules.visualization.charts import (
     apply_clip_arrows,
     apply_recession_shading,
 )
+from components.chart_renderer import apply_style
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -88,14 +74,14 @@ st.markdown(
     <style>
     [data-testid="stSidebar"] { min-width: 260px; max-width: 320px; }
     .metric-card {
-        background: #f8f9fa;
-        border: 1px solid #e0e0e0;
+        background: #FAF9F9;
+        border: 1px solid #E1DBD4;
         border-radius: 8px;
         padding: 12px 16px;
         margin: 4px 0;
     }
     h1 { font-size: 1.8rem !important; }
-    h2 { font-size: 1.3rem !important; border-bottom: 1px solid #e0e0e0; padding-bottom: 4px; }
+    h2 { font-size: 1.3rem !important; border-bottom: 1px solid #E1DBD4; padding-bottom: 4px; }
     h3 { font-size: 1.1rem !important; }
     </style>
     """,
@@ -109,7 +95,7 @@ _dynamic_dashboards = list_dynamic_dashboards()
 _dynamic_page_map = {cfg["title"]: cfg for cfg in _dynamic_dashboards}
 
 _DASHBOARD_PAGES = ["US Reindustrialization"] + [cfg["title"] for cfg in _dynamic_dashboards]
-_TOOL_PAGES = ["Data Sources", "Feed Manager", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Regression & Analysis", "Data Table"]
+_TOOL_PAGES = ["Data Explorer", "Feed Manager", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Tag Manager", "Regression & Analysis", "Data Table"]
 
 if "page" not in st.session_state:
     st.session_state.page = "US Reindustrialization"
@@ -138,6 +124,8 @@ if "cb_catalog_id" not in st.session_state:
     st.session_state.cb_catalog_id = None
 if "cb_edit_request" not in st.session_state:
     st.session_state.cb_edit_request = None
+if "cb_editing_idx" not in st.session_state:
+    st.session_state.cb_editing_idx = None
 
 # Card-specific session state (new format: dataset/column based)
 if "cb_card_dataset" not in st.session_state:
@@ -154,6 +142,12 @@ if "cb_card_value_suffix" not in st.session_state:
     st.session_state.cb_card_value_suffix = ""
 if "cb_card_delta_type" not in st.session_state:
     st.session_state.cb_card_delta_type = "none"
+
+# Chart Catalogs — delete confirmation state
+if "cc_pending_delete_catalog" not in st.session_state:
+    st.session_state.cc_pending_delete_catalog = None  # catalog_id awaiting confirmation
+if "cc_pending_delete_item" not in st.session_state:
+    st.session_state.cc_pending_delete_item = None  # item_id awaiting confirmation
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -273,367 +267,12 @@ elif page == "Dashboard Builder":
 
 
 # =============================================================================
-# PAGE: DATA SOURCES
+# PAGE: DATA EXPLORER
 # =============================================================================
 
-elif page == "Data Sources":
-    st.title("Data Sources")
-    st.markdown("Load data from FRED, BEA, file uploads, web scraping, or browse Zillow datasets.")
+elif page == "Data Explorer":
+    render_data_explorer()
 
-    tab_fred, tab_bea, tab_file, tab_web, tab_zillow = st.tabs(
-        ["🏦 FRED", "🏛️ BEA", "📁 File Upload", "🌐 Web Scraper", "🏠 Zillow"]
-    )
-
-    # ── FRED ─────────────────────────────────────────────────────────────────
-    with tab_fred:
-        st.subheader("FRED API")
-
-        _, err = get_fred_client()
-        if err:
-            st.warning(
-                f"**FRED API key not configured.**\n\n{err}\n\n"
-                "Copy `.env.example` to `.env` and add your key."
-            )
-
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            search_query = st.text_input(
-                "Search FRED",
-                placeholder="e.g. unemployment rate, CPI, GDP…",
-                key="fred_search_query",
-            )
-        with col2:
-            search_limit = st.number_input("Results", min_value=5, max_value=100, value=20, step=5)
-
-        if st.button("Search", key="fred_search_btn", use_container_width=True):
-            if not search_query:
-                st.warning("Enter a search term.")
-            else:
-                with st.spinner("Searching FRED…"):
-                    try:
-                        results = search_fred(search_query, limit=search_limit)
-                        if results.empty:
-                            st.info("No results found.")
-                        else:
-                            st.session_state["fred_search_results"] = results
-                            st.session_state["_ds_prev_fred_sel"] = []
-                    except Exception as e:
-                        st.error(f"Search failed: {e}")
-
-        if "fred_search_results" in st.session_state:
-            results = st.session_state["fred_search_results"]
-            st.markdown(f"**{len(results)} result(s)** — click a row to select it:")
-            _ds_event = st.dataframe(
-                results, use_container_width=True, height=250,
-                selection_mode="single-row", on_select="rerun",
-                key="ds_fred_results_table",
-            )
-            _ds_sel = _ds_event.selection.rows
-            _ds_prev = st.session_state.get("_ds_prev_fred_sel", [])
-            if _ds_sel != _ds_prev:
-                st.session_state["_ds_prev_fred_sel"] = _ds_sel
-                if _ds_sel:
-                    _ds_row = results.iloc[_ds_sel[0]]
-                    st.session_state["fred_series_id"] = str(_ds_row["id"])
-                    if "title" in _ds_row:
-                        st.session_state["fred_name"] = str(_ds_row["title"])[:80]
-            if _ds_sel:
-                _ds_row = results.iloc[_ds_sel[0]]
-                st.info(
-                    f"**{_ds_row['id']}** — {_ds_row.get('title', '')}  \n"
-                    "Series ID and name pre-filled below. Adjust dates if needed, then click **Load Series**."
-                )
-
-        st.markdown("---")
-        st.markdown("**Load a Series by ID**")
-
-        col_a, col_b, col_c = st.columns([2, 1, 1])
-        with col_a:
-            series_id = st.text_input(
-                "Series ID",
-                placeholder="e.g. UNRATE, CPIAUCSL, GDP",
-                key="fred_series_id",
-            ).strip().upper()
-        with col_b:
-            start_date = st.date_input("Start Date Override", value=None, key="fred_start")
-        with col_c:
-            end_date = st.date_input("End Date Override", value=None, key="fred_end")
-
-        units_multiplier = st.number_input(
-            "Units Multiplier (e.g. 0.001 to convert to thousands)",
-            value=1.0,
-            format="%g",
-            key="fred_units_multiplier",
-        )
-
-        custom_name = st.text_input(
-            "Dataset name (optional)",
-            placeholder="Leave blank to use Series ID",
-            key="fred_name",
-        ).strip()
-
-        if st.button("Load Series", key="fred_load_btn", use_container_width=True):
-            if not series_id:
-                st.warning("Enter a Series ID.")
-            else:
-                with st.spinner(f"Loading {series_id}…"):
-                    try:
-                        df = load_fred_series(
-                            series_id,
-                            start_date=str(start_date) if start_date else None,
-                            end_date=str(end_date) if end_date else None,
-                        )
-                        if units_multiplier != 1.0:
-                            df = df * units_multiplier
-                        name = custom_name or series_id
-                        add_to_catalog(name, df)
-                        st.success(f"Loaded **{name}** — {len(df):,} observations.")
-
-                        # Show info
-                        try:
-                            info = get_series_info(series_id)
-                            if info:
-                                title = info.get("title", "")
-                                units = info.get("units", "")
-                                freq = info.get("frequency", "")
-                                st.caption(f"{title} | {units} | {freq}")
-                        except Exception:
-                            pass
-
-                        st.line_chart(df)
-                    except Exception as e:
-                        st.error(f"Failed to load series: {e}")
-
-    # ── BEA ──────────────────────────────────────────────────────────────────
-    with tab_bea:
-        st.subheader("BEA (Bureau of Economic Analysis)")
-
-        _bea_key, _bea_err = get_bea_key_status()
-        if _bea_err:
-            st.warning(
-                f"**BEA API key not configured.**\n\n{_bea_err}\n\n"
-                "Copy `.env.example` to `.env` and add your key."
-            )
-
-        # ── Dataset + Frequency ───────────────────────────────────────────
-        _bea_ds_col, _bea_freq_col = st.columns([2, 1])
-        with _bea_ds_col:
-            _bea_dataset = st.selectbox(
-                "Dataset",
-                options=list(SUPPORTED_DATASETS.keys()),
-                format_func=lambda k: f"{k} — {SUPPORTED_DATASETS[k]}",
-                key="bea_dataset",
-            )
-        with _bea_freq_col:
-            _bea_freq_opts = ["A"] if _bea_dataset in ANNUAL_ONLY_DATASETS else ["Q", "A"]
-            _bea_freq = st.selectbox(
-                "Frequency",
-                options=_bea_freq_opts,
-                format_func=lambda f: {"Q": "Quarterly", "A": "Annual"}[f],
-                key="bea_freq",
-            )
-
-        # ── Table browser ─────────────────────────────────────────────────
-        @st.cache_data(ttl=86400, show_spinner=False)
-        def _bea_get_tables(dataset: str) -> pd.DataFrame:
-            return list_bea_tables(dataset)
-
-        if _bea_key:
-            try:
-                with st.spinner("Loading table list…"):
-                    _bea_tables_df = _bea_get_tables(_bea_dataset)
-            except Exception as _e:
-                st.error(f"Could not load table list: {_e}")
-                _bea_tables_df = pd.DataFrame(columns=["TableName", "Description"])
-        else:
-            _bea_tables_df = pd.DataFrame(columns=["TableName", "Description"])
-
-        _bea_filter = st.text_input(
-            "Filter tables",
-            placeholder="e.g. GDP, investment, price index…",
-            key="bea_filter",
-        )
-
-        _bea_display = _bea_tables_df.copy()
-        if _bea_filter.strip():
-            _mask = _bea_display["Description"].str.contains(
-                _bea_filter.strip(), case=False, na=False
-            )
-            _bea_display = _bea_display[_mask].reset_index(drop=True)
-
-        st.markdown(f"**{len(_bea_display)} table(s)** — click a row to select it:")
-        _bea_table_event = st.dataframe(
-            _bea_display,
-            use_container_width=True,
-            height=220,
-            selection_mode="single-row",
-            on_select="rerun",
-            key="bea_table_grid",
-        )
-        _bea_sel_rows = _bea_table_event.selection.rows
-
-        # Auto-preview when a row is selected
-        _bea_prev_sel = st.session_state.get("_bea_prev_table_sel", [])
-        if _bea_sel_rows != _bea_prev_sel:
-            st.session_state["_bea_prev_table_sel"] = _bea_sel_rows
-            st.session_state.pop("bea_preview", None)  # clear stale preview
-
-        _bea_selected_table = None
-        if _bea_sel_rows and not _bea_display.empty:
-            _bea_row = _bea_display.iloc[_bea_sel_rows[0]]
-            _bea_selected_table = _bea_row["TableName"]
-            st.info(f"**{_bea_selected_table}** — {_bea_row['Description']}")
-
-        # ── Preview lines ─────────────────────────────────────────────────
-        st.markdown("---")
-
-        if _bea_selected_table:
-            _bea_cached = st.session_state.get("bea_preview", {})
-            _need_preview = (
-                _bea_cached.get("table") != _bea_selected_table
-                or _bea_cached.get("dataset") != _bea_dataset
-                or _bea_cached.get("freq") != _bea_freq
-            )
-
-            if _need_preview and _bea_key:
-                with st.spinner(f"Previewing {_bea_selected_table}…"):
-                    try:
-                        _prev_df = fetch_bea_table(
-                            _bea_dataset, _bea_selected_table, _bea_freq,
-                            years=last_n_years(5),
-                        )
-                        st.session_state["bea_preview"] = {
-                            "table": _bea_selected_table,
-                            "dataset": _bea_dataset,
-                            "freq": _bea_freq,
-                            "columns": list(_prev_df.columns),
-                            "sample": _prev_df.tail(4),
-                        }
-                    except Exception as _e:
-                        st.error(f"Preview failed: {_e}")
-
-            _bea_preview = st.session_state.get("bea_preview", {})
-            if _bea_preview.get("table") == _bea_selected_table:
-                _all_lines = _bea_preview["columns"]
-                st.markdown(f"**{len(_all_lines)} line(s) available** — select which to load:")
-
-                # Sample data preview
-                with st.expander("Sample data (last 4 periods)", expanded=False):
-                    st.dataframe(_bea_preview["sample"], use_container_width=True)
-
-                _bea_sel_lines = st.multiselect(
-                    "Lines to load",
-                    options=_all_lines,
-                    default=_all_lines[:min(5, len(_all_lines))],
-                    key="bea_lines_sel",
-                )
-
-                _bea_name = st.text_input(
-                    "Dataset name",
-                    value=_bea_selected_table,
-                    key="bea_ds_name",
-                    placeholder="Name for the loaded dataset",
-                )
-
-                _bea_can_load = bool(_bea_sel_lines and _bea_name.strip())
-                if st.button(
-                    "Load Selected Lines",
-                    key="bea_load_btn",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not _bea_can_load,
-                ):
-                    with st.spinner(f"Loading {_bea_selected_table} (all years)…"):
-                        try:
-                            _full_df = fetch_bea_table(
-                                _bea_dataset, _bea_selected_table, _bea_freq, years="ALL"
-                            )
-                            _out_df = _full_df[
-                                [c for c in _bea_sel_lines if c in _full_df.columns]
-                            ]
-                            add_to_catalog(_bea_name.strip(), _out_df)
-                            st.success(
-                                f"Loaded **{_bea_name.strip()}** — "
-                                f"{len(_out_df):,} rows × {len(_out_df.columns)} series."
-                            )
-                            st.line_chart(_out_df)
-                        except Exception as _e:
-                            st.error(f"Load failed: {_e}")
-        else:
-            st.caption("Select a table above to preview its contents.")
-
-    # ── File Upload ──────────────────────────────────────────────────────────
-    with tab_file:
-        st.subheader("CSV / Excel Upload")
-
-        uploaded = st.file_uploader(
-            "Upload a CSV or Excel file",
-            type=["csv", "xlsx", "xls"],
-            key="file_uploader",
-        )
-
-        if uploaded:
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                file_name = st.text_input(
-                    "Dataset name",
-                    value=uploaded.name.rsplit(".", 1)[0],
-                    key="file_name",
-                )
-
-            if st.button("Load File", key="file_load_btn", use_container_width=True):
-                with st.spinner("Parsing file…"):
-                    try:
-                        df, msg = load_uploaded_file(uploaded)
-                        add_to_catalog(file_name, df)
-                        st.success(f"Loaded **{file_name}** — {len(df):,} rows, {len(df.columns)} columns.")
-                        st.caption(msg)
-                        st.dataframe(df.head(10), use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Failed to load file: {e}")
-
-    # ── Web Scraper ──────────────────────────────────────────────────────────
-    with tab_web:
-        st.subheader("Web Table Scraper")
-        st.caption("Scrapes HTML `<table>` elements from a public URL.")
-
-        url = st.text_input(
-            "URL",
-            placeholder="https://example.com/data-page",
-            key="scraper_url",
-        )
-
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            table_idx = st.number_input("Table index (0 = first)", min_value=0, value=0, key="scraper_idx")
-        with col2:
-            scraper_name = st.text_input(
-                "Dataset name",
-                value="scraped_table",
-                key="scraper_name",
-            )
-
-        if st.button("Scrape", key="scraper_btn", use_container_width=True):
-            if not url:
-                st.warning("Enter a URL.")
-            else:
-                with st.spinner("Fetching page…"):
-                    try:
-                        # First pass: get table count
-                        tables = scrape_tables(url)
-                        st.info(f"Found {len(tables)} table(s) on the page.")
-
-                        df, msg = scrape_table(url, table_index=int(table_idx))
-                        add_to_catalog(scraper_name, df)
-                        st.success(f"Loaded **{scraper_name}** — {len(df):,} rows.")
-                        st.caption(msg)
-                        st.dataframe(df.head(10), use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Scraping failed: {e}")
-
-    # ── Zillow ────────────────────────────────────────────────────────────────
-    with tab_zillow:
-        render_zillow_browser()
 
 
 
@@ -650,6 +289,83 @@ elif page == "Feed Manager":
 
 elif page == "Chart Builder":
     st.title("Chart Builder")
+
+    # ── Helper: reload data for all series source types ──────────────────────
+    def _load_chart_series_data(series_list):
+        """Re-fetch data for a list of chart series (catalog, fred, feed, computed)."""
+        from modules.data_ingestion.fred_loader import load_fred_series as _ld_lfs
+        from modules.data_processing.transforms import year_over_year as _ld_yoy
+        from modules.data_processing.transforms import month_over_month as _ld_mom
+        from modules.data_processing.transforms import rolling_mean as _ld_rm
+        from providers import get_provider as _ld_gp
+
+        def _apply_transform(s, tr, rw=12):
+            if tr == "yoy":
+                return _ld_yoy(s)
+            elif tr == "mom":
+                return _ld_mom(s)
+            elif tr == "rolling":
+                return _ld_rm(s, rw)
+            return s
+
+        result = {}
+        for sd in series_list:
+            tr = sd.get("transform", "none")
+            label = sd.get("label", "")
+            rw = sd.get("rolling_window", 12)
+            source = sd.get("source", "")
+            try:
+                if source == "fred" and sd.get("series_id"):
+                    df = _ld_lfs(sd["series_id"])
+                    s = df.iloc[:, 0]
+                    result[label] = _apply_transform(s, tr, rw)
+
+                elif source == "feed" and sd.get("feed_id"):
+                    feed = get_feed_by_id(sd["feed_id"])
+                    if feed:
+                        prov = _ld_gp(feed["provider"])
+                        fdf = prov.fetch_series(feed["series_id"], **feed.get("kwargs", {}))
+                        if fdf is not None and not fdf.empty:
+                            s = fdf.iloc[:, 0]
+                            result[label] = _apply_transform(s, tr, rw)
+
+                elif source == "catalog":
+                    # "catalog" source = data originally loaded from FRED via Data Sources.
+                    # col holds the FRED series ID; catalog_name is the session key.
+                    col = sd.get("col")
+                    cat_name = sd.get("catalog_name", "")
+                    # Try session state catalog first
+                    if cat_name and cat_name in st.session_state.get("catalog", {}):
+                        cat_df = st.session_state.catalog[cat_name]
+                        if col and col in cat_df.columns:
+                            s = cat_df[col].dropna()
+                        else:
+                            s = cat_df.iloc[:, 0].dropna()
+                        result[label] = _apply_transform(s, tr, rw)
+                    elif col:
+                        # Fall back: re-fetch from FRED using col as series ID
+                        df = _ld_lfs(col)
+                        s = df.iloc[:, 0]
+                        result[label] = _apply_transform(s, tr, rw)
+
+                elif source == "computed" and sd.get("op") == "div":
+                    sa_name = sd.get("series_a", "")
+                    sb_name = sd.get("series_b", "")
+                    # Try loading both operands from session catalog or FRED
+                    def _get_series(name):
+                        if name in st.session_state.get("catalog", {}):
+                            return st.session_state.catalog[name].iloc[:, 0].dropna()
+                        df = _ld_lfs(name)
+                        return df.iloc[:, 0]
+                    sa = _get_series(sa_name)
+                    sb = _get_series(sb_name)
+                    sa_aligned, sb_aligned = sa.align(sb, join="inner")
+                    s = sa_aligned / sb_aligned
+                    result[label] = _apply_transform(s, tr, rw)
+
+            except Exception:
+                pass
+        return result
 
     # ── Handle edit request from Chart Catalogs page ──────────────────────────
     _edit_req = st.session_state.cb_edit_request
@@ -675,7 +391,7 @@ elif page == "Chart Builder":
                 st.session_state["cb_use_y_max2"] = _ya2.get("max") is not None
                 st.session_state["cb_y_max2"] = _ya2.get("max") or 100.0
                 st.session_state["cb_show_legend"] = _er_item.get("show_legend", True)
-                st.session_state.cb_data = {}  # data will be reloaded from session catalog
+                st.session_state.cb_data = _load_chart_series_data(_er_item.get("series", []))
             else:
                 st.session_state.cb_card_dataset = _er_item.get("dataset_name", "")
                 st.session_state.cb_card_column = _er_item.get("column", "")
@@ -733,44 +449,7 @@ elif page == "Chart Builder":
                                     st.session_state["cb_use_y_max2"] = _ya2.get("max") is not None
                                     st.session_state["cb_y_max2"] = _ya2.get("max") or 100.0
                                     st.session_state["cb_show_legend"] = _loaded.get("show_legend", True)
-                                    # Repopulate cb_data for FRED and feed series (best-effort)
-                                    from modules.data_ingestion.fred_loader import load_fred_series as _lfs
-                                    from modules.data_processing.transforms import year_over_year as _yoy_fn
-                                    from modules.data_processing.transforms import month_over_month as _mom_fn
-                                    from modules.data_processing.transforms import rolling_mean as _rm_fn
-                                    from providers import get_provider as _lp
-                                    _new_data = {}
-                                    for _sd in _loaded.get("series", []):
-                                        _tr = _sd.get("transform", "none")
-                                        _label = _sd["label"]
-                                        try:
-                                            if _sd.get("source") == "fred" and _sd.get("series_id"):
-                                                _df_tmp = _lfs(_sd["series_id"])
-                                                _s_tmp = _df_tmp.iloc[:, 0]
-                                                if _tr == "yoy":
-                                                    _s_tmp = _yoy_fn(_s_tmp)
-                                                elif _tr == "mom":
-                                                    _s_tmp = _mom_fn(_s_tmp)
-                                                elif _tr == "rolling":
-                                                    _s_tmp = _rm_fn(_s_tmp, _sd.get("rolling_window", 12))
-                                                _new_data[_label] = _s_tmp
-                                            elif _sd.get("source") == "feed" and _sd.get("feed_id"):
-                                                _feed = get_feed_by_id(_sd["feed_id"])
-                                                if _feed:
-                                                    _f_prov = _lp(_feed["provider"])
-                                                    _f_df = _f_prov.fetch_series(_feed["series_id"], **_feed.get("kwargs", {}))
-                                                    if _f_df is not None and not _f_df.empty:
-                                                        _s_tmp = _f_df.iloc[:, 0]
-                                                        if _tr == "yoy":
-                                                            _s_tmp = _yoy_fn(_s_tmp)
-                                                        elif _tr == "mom":
-                                                            _s_tmp = _mom_fn(_s_tmp)
-                                                        elif _tr == "rolling":
-                                                            _s_tmp = _rm_fn(_s_tmp, _sd.get("rolling_window", 12))
-                                                        _new_data[_label] = _s_tmp
-                                        except Exception:
-                                            pass
-                                    st.session_state.cb_data = _new_data
+                                    st.session_state.cb_data = _load_chart_series_data(_loaded.get("series", []))
                                 else:
                                     st.session_state.cb_card_dataset = _loaded.get("dataset_name", "")
                                     st.session_state.cb_card_column = _loaded.get("column", "")
@@ -865,25 +544,108 @@ elif page == "Chart Builder":
             st.markdown("**Current Series**")
             for idx, _s in enumerate(list(cb_series)):
                 src_info = f"{_s['source']}·{_s['chart_type']}·{_s.get('transform', 'none')}·ax{_s['axis']}"
-                _ca, _cb, _cc, _cd = st.columns([5, 1, 1, 1])
+                _ca, _cb, _cc, _cd, _ce = st.columns([4, 1, 1, 1, 1])
                 with _ca:
                     st.markdown(
                         f"`{_s['label']}` <small style='color:#888'>({src_info})</small>",
                         unsafe_allow_html=True,
                     )
                 with _cb:
+                    if st.button("Edit", key=f"cb_edit_{idx}"):
+                        st.session_state.cb_editing_idx = idx
+                        st.rerun()
+                with _cc:
                     if st.button("↑", key=f"cb_up_{idx}", disabled=(idx == 0)):
                         cb_series[idx - 1], cb_series[idx] = cb_series[idx], cb_series[idx - 1]
                         st.rerun()
-                with _cc:
+                with _cd:
                     if st.button("↓", key=f"cb_dn_{idx}", disabled=(idx == len(cb_series) - 1)):
                         cb_series[idx], cb_series[idx + 1] = cb_series[idx + 1], cb_series[idx]
                         st.rerun()
-                with _cd:
+                with _ce:
                     if st.button("✕", key=f"cb_rm_{idx}"):
                         removed = cb_series.pop(idx)
                         cb_data.pop(removed["label"], None)
+                        st.session_state.cb_editing_idx = None
                         st.rerun()
+
+                # ── Inline edit form when this series is being edited ────
+                if st.session_state.cb_editing_idx == idx:
+                    with st.container():
+                        st.markdown(f"**Editing: {_s['label']}**")
+                        _ed_c1, _ed_c2 = st.columns(2)
+                        with _ed_c1:
+                            _ed_label = st.text_input("Label", value=_s["label"], key=f"cb_ed_label_{idx}")
+                            _ed_chart_type = st.selectbox(
+                                "Chart type",
+                                ["line", "bar", "area"],
+                                index=["line", "bar", "area"].index(_s.get("chart_type", "line")),
+                                key=f"cb_ed_ctype_{idx}",
+                            )
+                        with _ed_c2:
+                            _transform_opts = ["none", "yoy", "mom", "rolling"]
+                            _cur_tr = _s.get("transform", "none")
+                            _ed_transform = st.selectbox(
+                                "Transform",
+                                _transform_opts,
+                                index=_transform_opts.index(_cur_tr) if _cur_tr in _transform_opts else 0,
+                                key=f"cb_ed_transform_{idx}",
+                            )
+                            _ed_rolling = st.number_input(
+                                "Rolling window",
+                                min_value=2, max_value=120,
+                                value=_s.get("rolling_window", 12),
+                                key=f"cb_ed_rolling_{idx}",
+                                disabled=(_ed_transform != "rolling"),
+                            )
+                        _ed_axis = st.selectbox(
+                            "Axis", [1, 2],
+                            index=[1, 2].index(_s.get("axis", 1)),
+                            key=f"cb_ed_axis_{idx}",
+                        )
+                        _ed_apply, _ed_cancel = st.columns(2)
+                        with _ed_apply:
+                            if st.button("Apply", key=f"cb_ed_apply_{idx}", type="primary"):
+                                old_label = cb_series[idx]["label"]
+                                cb_series[idx]["label"] = _ed_label.strip() or old_label
+                                cb_series[idx]["chart_type"] = _ed_chart_type
+                                cb_series[idx]["transform"] = _ed_transform
+                                cb_series[idx]["rolling_window"] = int(_ed_rolling)
+                                cb_series[idx]["axis"] = int(_ed_axis)
+                                # Re-fetch data if transform or label changed
+                                new_label = cb_series[idx]["label"]
+                                if old_label != new_label:
+                                    cb_data.pop(old_label, None)
+                                new_data = _load_chart_series_data([cb_series[idx]])
+                                if new_label in new_data:
+                                    cb_data[new_label] = new_data[new_label]
+                                # Auto-save to catalog when editing an existing item
+                                if st.session_state.cb_item_id and st.session_state.cb_catalog_id:
+                                    _as_ya = {
+                                        "min": st.session_state.get("cb_y_min") if st.session_state.get("cb_use_y_min") else None,
+                                        "max": st.session_state.get("cb_y_max") if st.session_state.get("cb_use_y_max") else None,
+                                    }
+                                    _as_ya2 = {
+                                        "min": st.session_state.get("cb_y_min2") if st.session_state.get("cb_use_y_min2") else None,
+                                        "max": st.session_state.get("cb_y_max2") if st.session_state.get("cb_use_y_max2") else None,
+                                    }
+                                    _autosave_item = {
+                                        "type": "chart",
+                                        "id": st.session_state.cb_item_id,
+                                        "title": st.session_state.get("cb_chart_title", "Untitled"),
+                                        "chart_subtype": "Time Series",
+                                        "y_axis": _as_ya,
+                                        "y_axis2": _as_ya2,
+                                        "show_legend": st.session_state.get("cb_show_legend", True),
+                                        "series": list(cb_series),
+                                    }
+                                    upsert_item(st.session_state.cb_catalog_id, _autosave_item)
+                                st.session_state.cb_editing_idx = None
+                                st.rerun()
+                        with _ed_cancel:
+                            if st.button("Cancel", key=f"cb_ed_cancel_{idx}"):
+                                st.session_state.cb_editing_idx = None
+                                st.rerun()
         else:
             st.info("Add series below to begin")
 
@@ -1163,6 +925,7 @@ elif page == "Chart Builder":
                     y_max2=y_max2,
                     show_legend=show_legend,
                 )
+                apply_style(fig)
                 if y_min is not None or y_max is not None:
                     apply_clip_arrows(fig, y_min, y_max)
                 st.plotly_chart(fig, use_container_width=True)
@@ -1540,48 +1303,73 @@ elif page == "Chart Catalogs":
     if not _cc_catalogs:
         st.info("No catalogs yet. Build a chart or card in **Chart Builder** and save it to a catalog.")
     else:
-        # Catalog selector
+        # Catalog selector — remember selection across page visits
         _cc_cat_titles = [c["title"] for c in _cc_catalogs]
         _cc_cat_ids = {c["title"]: c["id"] for c in _cc_catalogs}
+
+        # Restore previous selection if still valid
+        _cc_default_idx = 0
+        if "cc_last_catalog" in st.session_state:
+            _cc_last = st.session_state.cc_last_catalog
+            if _cc_last in _cc_cat_titles:
+                _cc_default_idx = _cc_cat_titles.index(_cc_last)
 
         _cc_selected_title = st.selectbox(
             "Catalog",
             options=_cc_cat_titles,
+            index=_cc_default_idx,
             key="cc_catalog_sel",
         )
+        st.session_state.cc_last_catalog = _cc_selected_title
         _cc_catalog_id = _cc_cat_ids[_cc_selected_title]
         _cc_cat_data = load_catalog(_cc_catalog_id)
 
         if _cc_cat_data:
-            # Catalog header — inline title edit
-            _cc_header_col, _cc_del_col = st.columns([5, 1])
-            with _cc_header_col:
+            # Catalog management in a compact row
+            _cc_mgmt_col1, _cc_mgmt_col2 = st.columns([5, 1])
+            with _cc_mgmt_col1:
+                _cc_desc = _cc_cat_data.get("description", "")
+                if _cc_desc:
+                    st.caption(_cc_desc)
+            with _cc_mgmt_col2:
+                if st.session_state.cc_pending_delete_catalog == _cc_catalog_id:
+                    _dcc1, _dcc2 = st.columns(2)
+                    with _dcc1:
+                        if st.button("Confirm Delete", key="cc_del_cat_confirm_btn", type="primary"):
+                            delete_catalog(_cc_catalog_id)
+                            st.session_state.cc_pending_delete_catalog = None
+                            st.session_state.pop("cc_last_catalog", None)
+                            st.toast(f"Deleted catalog: {_cc_selected_title}")
+                            st.rerun()
+                    with _dcc2:
+                        if st.button("Cancel", key="cc_del_cat_cancel_btn"):
+                            st.session_state.cc_pending_delete_catalog = None
+                            st.rerun()
+                else:
+                    if st.button("Delete Catalog", key="cc_del_cat_btn", type="secondary"):
+                        st.session_state.cc_pending_delete_catalog = _cc_catalog_id
+                        st.rerun()
+
+            # Edit catalog info in expander (less prominent)
+            with st.expander("Edit catalog info"):
                 _cc_new_title = st.text_input(
                     "Catalog title",
                     value=_cc_cat_data.get("title", ""),
                     key="cc_cat_title_input",
-                    label_visibility="collapsed",
                 )
-            with _cc_del_col:
-                if st.button("Delete Catalog", key="cc_del_cat_btn", type="secondary"):
-                    delete_catalog(_cc_catalog_id)
-                    st.toast(f"Deleted catalog: {_cc_selected_title}")
+                _cc_new_desc = st.text_input(
+                    "Description",
+                    value=_cc_cat_data.get("description", ""),
+                    key="cc_cat_desc_input",
+                    placeholder="Optional description",
+                )
+                if st.button("Save catalog info", key="cc_save_cat_btn"):
+                    _cc_cat_data["title"] = _cc_new_title.strip() or _cc_cat_data["title"]
+                    _cc_cat_data["description"] = _cc_new_desc.strip()
+                    save_catalog(_cc_cat_data)
+                    st.session_state.cc_last_catalog = _cc_cat_data["title"]
+                    st.toast("Catalog updated.")
                     st.rerun()
-
-            _cc_desc = st.text_input(
-                "Description",
-                value=_cc_cat_data.get("description", ""),
-                key="cc_cat_desc_input",
-                placeholder="Optional description",
-                label_visibility="visible",
-            )
-
-            if st.button("Save catalog info", key="cc_save_cat_btn"):
-                _cc_cat_data["title"] = _cc_new_title.strip() or _cc_cat_data["title"]
-                _cc_cat_data["description"] = _cc_desc.strip()
-                save_catalog(_cc_cat_data)
-                st.toast("Catalog updated.")
-                st.rerun()
 
             st.markdown("---")
 
@@ -1596,53 +1384,48 @@ elif page == "Chart Catalogs":
                     _ci_icon = "📊" if _ci_type == "chart" else "🔢"
                     _ci_title = _ci.get("title", _ci["id"])
 
-                    with st.expander(f"{_ci_icon} {_ci_title}  `[{_ci_type}]`", expanded=False):
-                        _cc_i_col1, _cc_i_col2 = st.columns([4, 1])
-                        with _cc_i_col1:
-                            _cc_new_item_title = st.text_input(
-                                "Title",
-                                value=_ci_title,
-                                key=f"cc_item_title_{_ci['id']}",
-                            )
-                            if _ci_type == "chart":
-                                _ci_series = _ci.get("series", [])
-                                if _ci_series:
-                                    st.caption(
-                                        "Series: " + ", ".join(
-                                            f"`{s['label']}`" for s in _ci_series
-                                        )
-                                    )
-                            elif _ci_type == "card":
-                                _ci_ds = _ci.get("dataset_name", "")
-                                _ci_col = _ci.get("column", "")
-                                _ci_delta = _ci.get("delta_type", "none")
+                    # Each item shown as a row with info + action buttons visible
+                    _cc_i_col1, _cc_i_col2, _cc_i_col3 = st.columns([5, 1, 1])
+                    with _cc_i_col1:
+                        st.markdown(f"**{_ci_icon} {_ci_title}**  `{_ci_type}`")
+                        if _ci_type == "chart":
+                            _ci_series = _ci.get("series", [])
+                            if _ci_series:
                                 st.caption(
-                                    f"Dataset: `{_ci_ds}`  ·  Column: `{_ci_col}`  ·  Delta: {_ci_delta}"
+                                    "Series: " + ", ".join(
+                                        f"`{s['label']}`" for s in _ci_series
+                                    )
                                 )
-                            _ci_updated = _ci.get("updated_at", "")
-                            if _ci_updated:
-                                st.caption(f"Updated: {_ci_updated[:19]}")
+                        elif _ci_type == "card":
+                            _ci_ds = _ci.get("dataset_name", "")
+                            _ci_col = _ci.get("column", "")
+                            st.caption(f"Dataset: `{_ci_ds}`  ·  Column: `{_ci_col}`")
 
-                        with _cc_i_col2:
-                            if st.button("Edit in Builder", key=f"cc_edit_{_ci['id']}"):
-                                st.session_state.cb_edit_request = {
-                                    "catalog_id": _cc_catalog_id,
-                                    "item_id": _ci["id"],
-                                }
-                                st.session_state.page = "Chart Builder"
-                                st.rerun()
-                            if st.button("Delete", key=f"cc_del_{_ci['id']}", type="secondary"):
+                    with _cc_i_col2:
+                        if st.button("Edit", key=f"cc_edit_{_ci['id']}", use_container_width=True):
+                            st.session_state.cb_edit_request = {
+                                "catalog_id": _cc_catalog_id,
+                                "item_id": _ci["id"],
+                            }
+                            st.session_state.page = "Chart Builder"
+                            st.rerun()
+
+                    with _cc_i_col3:
+                        if st.session_state.cc_pending_delete_item == _ci["id"]:
+                            if st.button("Confirm", key=f"cc_del_confirm_{_ci['id']}", type="primary", use_container_width=True):
                                 catalog_delete_item(_cc_catalog_id, _ci["id"])
+                                st.session_state.cc_pending_delete_item = None
                                 st.toast(f"Deleted: {_ci_title}")
                                 st.rerun()
-
-                        # Save title change
-                        if _cc_new_item_title.strip() != _ci_title:
-                            if st.button("Save title", key=f"cc_save_item_{_ci['id']}"):
-                                _ci["title"] = _cc_new_item_title.strip()
-                                upsert_item(_cc_catalog_id, _ci)
-                                st.toast("Title updated.")
+                            if st.button("Cancel", key=f"cc_del_cancel_{_ci['id']}", use_container_width=True):
+                                st.session_state.cc_pending_delete_item = None
                                 st.rerun()
+                        else:
+                            if st.button("Delete", key=f"cc_del_{_ci['id']}", type="secondary", use_container_width=True):
+                                st.session_state.cc_pending_delete_item = _ci["id"]
+                                st.rerun()
+
+                    st.divider()
 
 
 # =============================================================================
@@ -1950,3 +1733,11 @@ elif page == "Data Table":
             if st.button("Remove from catalog", use_container_width=True, key="dt_remove"):
                 del st.session_state.catalog[selected]
                 st.rerun()
+
+
+# =============================================================================
+# PAGE: TAG MANAGER
+# =============================================================================
+
+elif page == "Tag Manager":
+    render_tag_manager()

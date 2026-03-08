@@ -1,0 +1,77 @@
+{
+  "style_name": "kennedy_lewis",
+  "brand_colors": {
+    "harbor_depth": "#011E2F",
+    "morning_veil": "#FAF9F9",
+    "east_river_blue": "#44ADE2",
+    "eastside_dusk": "#134C72",
+    "gallery_white": "#F6F2EE",
+    "clouded_facade": "#E1DBD4",
+    "warm_stone": "#ABA29A",
+    "steel_haze": "#9EA3AB"
+  },
+  "plotly_template": {
+    "layout": {
+      "font": {
+        "family": "Arial, sans-serif",
+        "size": 12,
+        "color": "#011E2F"
+      },
+      "title": {
+        "font": { "family": "Arial, sans-serif", "size": 16, "color": "#011E2F" },
+        "x": 0.0,
+        "xanchor": "left"
+      },
+      "xaxis": {
+        "gridcolor": "#E1DBD4",
+        "gridwidth": 1,
+        "linecolor": "#E1DBD4",
+        "linewidth": 1,
+        "tickfont": { "family": "Arial, sans-serif", "size": 11, "color": "#9EA3AB" },
+        "showgrid": false,
+        "zeroline": false
+      },
+      "yaxis": {
+        "gridcolor": "#E1DBD4",
+        "gridwidth": 1,
+        "linecolor": "#E1DBD4",
+        "linewidth": 1,
+        "tickfont": { "family": "Arial, sans-serif", "size": 11, "color": "#9EA3AB" },
+        "showgrid": true,
+        "zeroline": false
+      },
+      "plot_bgcolor": "rgba(0,0,0,0)",
+      "paper_bgcolor": "#FAF9F9",
+      "legend": {
+        "font": { "family": "Arial, sans-serif", "size": 11, "color": "#011E2F" },
+        "orientation": "h",
+        "yanchor": "top",
+        "y": -0.15,
+        "xanchor": "center",
+        "x": 0.5
+      },
+      "colorway": ["#011E2F", "#44ADE2", "#134C72", "#9EA3AB", "#ABA29A", "#E1DBD4"],
+      "margin": { "t": 60, "b": 60, "l": 60, "r": 30 },
+      "hovermode": "x unified"
+    },
+    "data": {
+      "scatter": [{ "line": { "width": 2.25 } }]
+    }
+  },
+  "recession_shading_color": "rgba(225, 219, 212, 0.35)",
+  "range_slider": {
+    "thickness": 0.04,
+    "bgcolor": "#f0f0f0",
+    "bordercolor": "#cccccc",
+    "borderwidth": 1
+  },
+  "metric_card_styles": {
+    "positive_delta_color": "#44ADE2",
+    "negative_delta_color": "#9EA3AB",
+    "value_font_size": 28,
+    "value_color": "#011E2F",
+    "delta_font_size": 14,
+    "background_color": "#FAF9F9",
+    "border_color": "#E1DBD4"
+  }
+}

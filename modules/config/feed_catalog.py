@@ -7,21 +7,26 @@ in chart configs, charts reference feed_ids from this catalog.
 
 Storage: catalogs/feeds.json — a flat list of feed objects.
 
-Feed schema:
+Feed schema (v2):
 {
     "id": "feed_<8hex>",
     "name": "Unemployment Rate",
-    "provider": "fred",          # key in PROVIDERS registry
-    "series_id": "UNRATE",       # provider-specific identifier
+    "provider": "fred",              # key in PROVIDERS registry
+    "series_id": "UNRATE",           # provider-specific identifier (kept for compat)
+    "description": "Civilian ...",   # optional human description
+    "source": "U.S. Bureau of ...",  # originating agency (auto-filled for FRED)
+    "release": "Employment ...",     # statistical release name (auto-filled for FRED)
     "frequency": "Monthly",
     "units": "Percent",
-    "tags": ["labor", "unemployment"],
-    "refresh_schedule": "daily",  # daily / weekly / monthly / manual
-    "provider_metadata": {},      # cached metadata from provider
+    "dimensions": {},                # optional: geography, segment, etc.
+    "params": {},                    # provider-specific params (consolidates series_id + kwargs)
+    "tags": ["labor"],
+    "refresh_schedule": "daily",     # daily / weekly / monthly / manual
+    "provider_metadata": {},         # cached metadata from provider
     "created_at": "...",
     "updated_at": "...",
     "last_refreshed": null,
-    "kwargs": {}                  # extra provider-specific params (e.g. regions for Zillow)
+    "kwargs": {}                     # legacy — use params for new feeds
 }
 """
 
@@ -111,6 +116,11 @@ def create_feed(
     refresh_schedule: str = "daily",
     provider_metadata: Optional[Dict[str, Any]] = None,
     kwargs: Optional[Dict[str, Any]] = None,
+    description: str = "",
+    source: str = "",
+    release: str = "",
+    dimensions: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create and persist a new feed. Returns the feed dict."""
     feeds = _load_all()
@@ -120,8 +130,13 @@ def create_feed(
         "name": name.strip(),
         "provider": provider,
         "series_id": series_id,
+        "description": description,
+        "source": source,
+        "release": release,
         "frequency": frequency,
         "units": units,
+        "dimensions": dimensions or {},
+        "params": params or {"series_id": series_id},
         "tags": tags or [],
         "refresh_schedule": refresh_schedule,
         "provider_metadata": provider_metadata or {},
@@ -164,23 +179,40 @@ def delete_feed(feed_id: str) -> bool:
     return True
 
 
-def bulk_create_feeds(feed_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def bulk_create_feeds(
+    feed_defs: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[str]]:
     """
     Create multiple feeds at once. Each def should have at minimum:
     name, provider, series_id.
-    Returns list of created feed dicts.
+
+    Skips any feed whose provider+series_id combination is already registered.
+
+    Returns (created_feeds, skipped_series_ids).
     """
     feeds = _load_all()
-    created = []
+    # Build a set of (provider, series_id) already on disk for O(1) lookup
+    existing_keys = {(f["provider"], f["series_id"]) for f in feeds}
+    created: List[Dict[str, Any]] = []
+    skipped: List[str] = []
     now = datetime.now().isoformat()
     for defn in feed_defs:
+        key = (defn["provider"], defn["series_id"])
+        if key in existing_keys:
+            skipped.append(defn["series_id"])
+            continue
         feed = {
             "id": f"feed_{uuid.uuid4().hex[:8]}",
             "name": defn.get("name", defn.get("series_id", "")),
             "provider": defn["provider"],
             "series_id": defn["series_id"],
+            "description": defn.get("description", ""),
+            "source": defn.get("source", ""),
+            "release": defn.get("release", ""),
             "frequency": defn.get("frequency", ""),
             "units": defn.get("units", ""),
+            "dimensions": defn.get("dimensions", {}),
+            "params": defn.get("params", {"series_id": defn["series_id"]}),
             "tags": defn.get("tags", []),
             "refresh_schedule": defn.get("refresh_schedule", "daily"),
             "provider_metadata": defn.get("provider_metadata", {}),
@@ -190,9 +222,10 @@ def bulk_create_feeds(feed_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "kwargs": defn.get("kwargs", {}),
         }
         feeds.append(feed)
+        existing_keys.add(key)  # prevent duplicates within the same batch
         created.append(feed)
     _save_all(feeds)
-    return created
+    return created, skipped
 
 
 def mark_refreshed(feed_id: str) -> None:
@@ -203,3 +236,25 @@ def mark_refreshed(feed_id: str) -> None:
 def feed_count() -> int:
     """Return total number of registered feeds."""
     return len(_load_all())
+
+
+def get_feed_series_id(feed: Dict[str, Any]) -> str:
+    """
+    Get the effective series_id from a feed dict.
+    Checks params.series_id first, then falls back to top-level series_id.
+    """
+    params = feed.get("params", {})
+    return params.get("series_id", feed.get("series_id", ""))
+
+
+def get_feed_params(feed: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Get the effective provider params from a feed dict.
+    Merges params with legacy kwargs for backward compatibility.
+    """
+    params = dict(feed.get("params", {}))
+    # Fall back to series_id + kwargs if params is empty
+    if not params:
+        params["series_id"] = feed.get("series_id", "")
+        params.update(feed.get("kwargs", {}))
+    return params

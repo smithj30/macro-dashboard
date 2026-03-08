@@ -1,0 +1,39 @@
+{
+  "id": "manufacturing",
+  "title": "Manufacturing",
+  "description": "",
+  "created_at": "2026-03-02T20:51:37.682541",
+  "updated_at": "2026-03-02T20:52:31.187613",
+  "items": [
+    {
+      "type": "chart",
+      "title": "Manufacturers New Orders",
+      "chart_subtype": "Time Series",
+      "y_axis": {
+        "min": null,
+        "max": null
+      },
+      "y_axis2": {
+        "min": null,
+        "max": null
+      },
+      "show_legend": true,
+      "series": [
+        {
+          "label": "New Orders",
+          "chart_type": "line",
+          "axis": 1,
+          "source": "catalog",
+          "series_id": null,
+          "catalog_name": "Manufacturers' New Orders",
+          "col": "AMTMNO",
+          "transform": "none",
+          "rolling_window": 12
+        }
+      ],
+      "id": "item_7e18598a",
+      "updated_at": "2026-03-02T20:52:31.187613",
+      "created_at": "2026-03-02T20:52:02.672295"
+    }
+  ]
+}

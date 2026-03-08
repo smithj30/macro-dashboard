@@ -35,6 +35,8 @@ def _init_state():
         st.session_state.fm_edit_id = None
     if "fm_search_results" not in st.session_state:
         st.session_state.fm_search_results = None
+    if "fm_pending_delete" not in st.session_state:
+        st.session_state.fm_pending_delete = None  # feed_id awaiting confirmation
 
 
 def render():
@@ -106,10 +108,21 @@ def _render_browse():
 
     # Display as table
     for feed in feeds:
+        is_computed = feed.get("provider") == "computed"
         with st.container():
             cols = st.columns([3, 2, 2, 1, 1, 1])
             with cols[0]:
                 st.markdown(f"**{feed['name']}**")
+                # Show formula subtitle for computed feeds
+                if is_computed:
+                    params = feed.get("params", {})
+                    op_a_feed = get_feed(params.get("operand_a", ""))
+                    op_b_feed = get_feed(params.get("operand_b", ""))
+                    op_name = params.get("operation", "?")
+                    op_sym = {"div": "/", "sub": "-", "add": "+", "mul": "*", "pct_diff": "% diff"}.get(op_name, op_name)
+                    a_name = op_a_feed["name"] if op_a_feed else "?"
+                    b_name = op_b_feed["name"] if op_b_feed else "?"
+                    st.caption(f"= {a_name} {op_sym} {b_name}")
             with cols[1]:
                 st.caption(f"{feed['provider']}: {feed['series_id']}")
             with cols[2]:
@@ -117,19 +130,31 @@ def _render_browse():
                 if tags_str:
                     st.caption(f"Tags: {tags_str}")
             with cols[3]:
-                if st.button("Preview", key=f"fm_prev_{feed['id']}", use_container_width=True):
-                    st.session_state.fm_mode = "preview"
-                    st.session_state.fm_edit_id = feed["id"]
-                    st.rerun()
+                if is_computed:
+                    if st.button("Edit Formula", key=f"fm_editcomp_{feed['id']}", use_container_width=True):
+                        st.session_state.de_edit_computed_id = feed["id"]
+                        st.session_state.page = "Data Explorer"
+                        st.rerun()
+                else:
+                    if st.button("Preview", key=f"fm_prev_{feed['id']}", use_container_width=True):
+                        st.session_state.fm_mode = "preview"
+                        st.session_state.fm_edit_id = feed["id"]
+                        st.rerun()
             with cols[4]:
                 if st.button("Edit", key=f"fm_edit_{feed['id']}", use_container_width=True):
                     st.session_state.fm_mode = "edit"
                     st.session_state.fm_edit_id = feed["id"]
                     st.rerun()
             with cols[5]:
-                if st.button("Delete", key=f"fm_del_{feed['id']}", use_container_width=True):
-                    delete_feed(feed["id"])
-                    st.rerun()
+                if st.session_state.fm_pending_delete == feed["id"]:
+                    if st.button("Confirm", key=f"fm_del_confirm_{feed['id']}", use_container_width=True, type="primary"):
+                        delete_feed(feed["id"])
+                        st.session_state.fm_pending_delete = None
+                        st.rerun()
+                else:
+                    if st.button("Delete", key=f"fm_del_{feed['id']}", use_container_width=True):
+                        st.session_state.fm_pending_delete = feed["id"]
+                        st.rerun()
             st.markdown("---")
 
 
@@ -305,6 +330,7 @@ def _render_bulk_add():
 
         provider = get_provider(provider_name)
         feed_defs = []
+        failed_ids = []
         progress = st.progress(0, text="Fetching metadata...")
 
         for i, sid in enumerate(ids):
@@ -313,7 +339,7 @@ def _render_bulk_add():
             try:
                 meta = provider.get_metadata(sid)
             except Exception:
-                pass
+                failed_ids.append(sid)
 
             name = meta.get("title", sid)
             if isinstance(name, dict):
@@ -330,8 +356,17 @@ def _render_bulk_add():
             })
 
         progress.empty()
-        created = bulk_create_feeds(feed_defs)
-        st.success(f"Registered {len(created)} feed(s).")
+        created, skipped = bulk_create_feeds(feed_defs)
+        if created:
+            st.success(f"Registered {len(created)} feed(s).")
+        if skipped:
+            st.info(f"Skipped {len(skipped)} already-registered series: {', '.join(skipped)}")
+        if failed_ids:
+            st.warning(
+                f"Could not fetch metadata for {len(failed_ids)} ID(s): "
+                f"{', '.join(failed_ids)}. These were registered with the series ID as the name — "
+                f"edit them in Feed Manager to add details."
+            )
         st.session_state.fm_mode = "browse"
         st.rerun()
 

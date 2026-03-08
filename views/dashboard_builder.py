@@ -24,7 +24,7 @@ from modules.config.dashboard_config import (
     list_dynamic_dashboards,
     save_config,
 )
-from modules.config.chart_catalog import list_catalogs, load_catalog
+from modules.config.chart_catalog import list_catalogs, load_catalog, get_item as catalog_get_item
 from modules.data_ingestion.fred_loader import search_fred
 
 
@@ -44,6 +44,12 @@ def _init_state() -> None:
         st.session_state.builder_draft = {}
     if "builder_edit_id" not in st.session_state:
         st.session_state.builder_edit_id = None
+    if "b_pending_series" not in st.session_state:
+        st.session_state.b_pending_series = []
+    if "builder_pending_delete" not in st.session_state:
+        st.session_state.builder_pending_delete = None  # dashboard id awaiting delete confirmation
+    if "builder_editing_section_idx" not in st.session_state:
+        st.session_state.builder_editing_section_idx = None
 
 
 def _reset_builder() -> None:
@@ -59,6 +65,17 @@ def _go_step(n: int) -> None:
 
 def _new_section_id() -> str:
     return f"sec_{uuid.uuid4().hex[:8]}"
+
+
+def _resolve_item_title(catalog_id: str, item_id: str) -> str:
+    """Look up the actual title of a chart/card item from its catalog."""
+    try:
+        item = catalog_get_item(catalog_id, item_id)
+        if item:
+            return item.get("title", item_id)
+    except Exception:
+        pass
+    return item_id
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +98,20 @@ def _step_list() -> None:
                     st.caption(cfg["description"])
             with col_edit:
                 if st.button("Edit", key=f"edit_{cfg['id']}"):
-                    st.session_state.builder_draft = cfg
-                    st.session_state.builder_edit_id = cfg["id"]
+                    # Warn if there's an unsaved draft in progress for a different dashboard
+                    current_draft = st.session_state.builder_draft
+                    current_edit_id = st.session_state.builder_edit_id
+                    draft_has_content = bool(current_draft.get("title") or current_draft.get("sections"))
+                    if draft_has_content and current_edit_id != cfg["id"]:
+                        st.session_state.builder_draft = cfg
+                        st.session_state.builder_edit_id = cfg["id"]
+                        st.warning(
+                            f"Unsaved changes to **{current_draft.get('title', 'another dashboard')}** "
+                            f"were discarded. Use **Save Dashboard** before switching."
+                        )
+                    else:
+                        st.session_state.builder_draft = cfg
+                        st.session_state.builder_edit_id = cfg["id"]
                     _go_step(1)
             with col_clone:
                 if st.button("Clone", key=f"clone_{cfg['id']}"):
@@ -93,9 +122,15 @@ def _step_list() -> None:
                     save_config(new_cfg)
                     st.rerun()
             with col_del:
-                if st.button("Delete", key=f"del_{cfg['id']}"):
-                    delete_config(cfg["id"])
-                    st.rerun()
+                if st.session_state.builder_pending_delete == cfg["id"]:
+                    if st.button("Confirm", key=f"del_confirm_{cfg['id']}", type="primary"):
+                        delete_config(cfg["id"])
+                        st.session_state.builder_pending_delete = None
+                        st.rerun()
+                else:
+                    if st.button("Delete", key=f"del_{cfg['id']}"):
+                        st.session_state.builder_pending_delete = cfg["id"]
+                        st.rerun()
 
     st.markdown("---")
     if st.button("+ New Dashboard", type="primary", use_container_width=True):
@@ -178,18 +213,57 @@ def _step_sections() -> None:
     if sections:
         st.markdown("**Current sections** (drag via ↑/↓ to reorder):")
         for idx, sec in enumerate(sections):
-            col_info, col_up, col_dn, col_rm = st.columns([6, 1, 1, 1])
-            with col_info:
-                _stype = sec.get("type", "chart")
-                _icon = {"chart": "📊", "news": "📰", "catalog_chart": "📊", "card_row": "🃏"}.get(_stype, "❓")
-                layout = sec.get("layout", "full")
-                if _stype == "card_row":
-                    _label = f"Card Row ({len(sec.get('cards', []))} cards)"
-                elif _stype == "catalog_chart":
-                    _label = sec.get("title_override") or sec.get("item_id", "Catalog Chart")
+            _stype = sec.get("type", "chart")
+            _icon = {"chart": "📊", "news": "📰", "catalog_chart": "📊", "card_row": "🃏"}.get(_stype, "❓")
+            layout = sec.get("layout", "full")
+
+            # Resolve display label
+            if _stype == "card_row":
+                _card_names = []
+                for card in sec.get("cards", []):
+                    _card_names.append(_resolve_item_title(card.get("catalog_id", ""), card.get("item_id", "")))
+                _label = "Cards: " + ", ".join(_card_names) if _card_names else "Card Row (empty)"
+            elif _stype == "catalog_chart":
+                if sec.get("title_override"):
+                    _label = sec["title_override"]
                 else:
-                    _label = sec.get("title", "Untitled")
+                    _label = _resolve_item_title(sec.get("catalog_id", ""), sec.get("item_id", ""))
+            else:
+                _label = sec.get("title", "Untitled")
+
+            # Determine if this section has an editable chart/card item
+            _has_open = _stype in ("catalog_chart", "card_row")
+
+            col_info, col_settings, col_open, col_up, col_dn, col_rm = st.columns([4, 1, 1, 1, 1, 1])
+
+            with col_info:
                 st.markdown(f"{_icon} **{_label}** `{layout}`")
+
+            with col_settings:
+                if st.button("⚙", key=f"sec_settings_{idx}", use_container_width=True, help="Edit section properties"):
+                    st.session_state.builder_editing_section_idx = idx
+                    st.rerun()
+
+            with col_open:
+                if _stype == "catalog_chart":
+                    if st.button("Open", key=f"sec_edit_{idx}", use_container_width=True, help="Open in Chart Builder"):
+                        st.session_state.cb_edit_request = {
+                            "catalog_id": sec.get("catalog_id", ""),
+                            "item_id": sec.get("item_id", ""),
+                        }
+                        st.session_state.page = "Chart Builder"
+                        st.rerun()
+                elif _stype == "card_row":
+                    cards = sec.get("cards", [])
+                    if cards:
+                        if st.button("Open", key=f"sec_edit_{idx}", use_container_width=True, help="Open in Chart Builder"):
+                            st.session_state.cb_edit_request = {
+                                "catalog_id": cards[0].get("catalog_id", ""),
+                                "item_id": cards[0].get("item_id", ""),
+                            }
+                            st.session_state.page = "Chart Builder"
+                            st.rerun()
+
             with col_up:
                 if idx > 0 and st.button("↑", key=f"up_{idx}"):
                     sections[idx - 1], sections[idx] = sections[idx], sections[idx - 1]
@@ -207,7 +281,53 @@ def _step_sections() -> None:
                     sections.pop(idx)
                     draft["sections"] = sections
                     st.session_state.builder_draft = draft
+                    st.session_state.builder_editing_section_idx = None
                     st.rerun()
+
+            # ── Inline section editing form ──────────────────────────
+            if st.session_state.builder_editing_section_idx == idx:
+                with st.container():
+                    st.markdown(f"**Edit Section Properties**")
+                    _ed_layout = st.selectbox(
+                        "Layout",
+                        options=_LAYOUT_OPTIONS,
+                        index=_LAYOUT_OPTIONS.index(layout) if layout in _LAYOUT_OPTIONS else 0,
+                        format_func=lambda x: _LAYOUT_LABELS.get(x, x),
+                        key=f"sec_ed_layout_{idx}",
+                    )
+                    _ed_title_override = None
+                    if _stype == "catalog_chart":
+                        _ed_title_override = st.text_input(
+                            "Title override (blank = use item title)",
+                            value=sec.get("title_override") or "",
+                            key=f"sec_ed_title_{idx}",
+                        )
+                    elif _stype in ("chart", "news"):
+                        _ed_title_override = st.text_input(
+                            "Title",
+                            value=sec.get("title", ""),
+                            key=f"sec_ed_title_{idx}",
+                        )
+                    _ed_apply, _ed_cancel = st.columns(2)
+                    with _ed_apply:
+                        if st.button("Apply", key=f"sec_ed_apply_{idx}", type="primary"):
+                            sections[idx]["layout"] = _ed_layout
+                            if _ed_title_override is not None:
+                                if _stype == "catalog_chart":
+                                    sections[idx]["title_override"] = _ed_title_override.strip() or None
+                                else:
+                                    sections[idx]["title"] = _ed_title_override.strip()
+                            draft["sections"] = sections
+                            st.session_state.builder_draft = draft
+                            # Auto-save to disk when editing an existing dashboard
+                            if st.session_state.builder_edit_id is not None:
+                                save_config(draft)
+                            st.session_state.builder_editing_section_idx = None
+                            st.rerun()
+                    with _ed_cancel:
+                        if st.button("Cancel", key=f"sec_ed_cancel_{idx}"):
+                            st.session_state.builder_editing_section_idx = None
+                            st.rerun()
     else:
         st.info("No sections yet. Add one below.")
 
@@ -487,15 +607,13 @@ def _card_row_section_form(draft: Dict[str, Any], sections: List[Dict[str, Any]]
         selected_items = st.multiselect(
             "Card items (select 1–4)",
             options=list(item_options.keys()),
+            max_selections=4,
             key="b_cr_items",
         )
 
         if st.button("Add Card Row Section", key="b_add_cr_section", type="primary"):
             if not selected_items:
                 st.warning("Select at least one card item.")
-                return
-            if len(selected_items) > 4:
-                st.warning("Maximum 4 cards per row.")
                 return
             cards_payload = [
                 {"catalog_id": cat_id, "item_id": item_options[label]}
@@ -539,12 +657,13 @@ def _step_preview() -> None:
                 label = sec.get("title", "News")
             elif stype == "catalog_chart":
                 icon = "📊"
-                detail = f"catalog: {sec.get('catalog_id', '')} / {sec.get('item_id', '')}"
-                label = sec.get("title_override") or sec.get("item_id", "Catalog Chart")
+                label = sec.get("title_override") or _resolve_item_title(sec.get("catalog_id", ""), sec.get("item_id", ""))
+                detail = f"`{sec.get('layout', 'full')}`"
             elif stype == "card_row":
                 icon = "🃏"
+                _card_names = [_resolve_item_title(c.get("catalog_id", ""), c.get("item_id", "")) for c in sec.get("cards", [])]
+                label = "Cards: " + ", ".join(_card_names) if _card_names else "Card Row (empty)"
                 detail = f"{len(sec.get('cards', []))} card(s)"
-                label = "Card Row"
             else:
                 icon = "❓"
                 detail = ""
@@ -571,11 +690,57 @@ def _step_preview() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _draft_has_content() -> bool:
+    """Check if the current builder draft has meaningful content."""
+    draft = st.session_state.get("builder_draft", {})
+    return bool(draft.get("title") or draft.get("sections"))
+
+
 def render() -> None:
     st.title("Dashboard Builder")
     _init_state()
 
+    # Track page entry: if we're coming from a different page, decide whether
+    # to reset or offer to resume an in-progress draft.
+    prev_page = st.session_state.get("_builder_prev_page")
+    current_page = st.session_state.get("page", "")
+    st.session_state._builder_prev_page = current_page
+
     step = st.session_state.builder_step
+
+    if prev_page != current_page:
+        # Just arrived from a different page
+        if step != 0 and _draft_has_content():
+            # There's an in-progress draft — show resume/discard banner
+            draft_title = st.session_state.builder_draft.get("title", "Untitled")
+            st.info(f"You have an unsaved draft: **{draft_title}**")
+            col_resume, col_discard = st.columns(2)
+            with col_resume:
+                if st.button("Resume Editing", type="primary", use_container_width=True, key="builder_resume"):
+                    pass  # Continue below with current step
+                else:
+                    return  # Wait for user action
+            with col_discard:
+                if st.button("Discard & Start Over", use_container_width=True, key="builder_discard"):
+                    _reset_builder()
+                    st.rerun()
+                else:
+                    return  # Wait for user action
+        elif step != 0:
+            # No meaningful draft, just reset silently
+            _reset_builder()
+            step = 0
+
+    # Show dashboard title when editing (steps 1+)
+    if step > 0:
+        draft = st.session_state.builder_draft
+        draft_title = draft.get("title", "")
+        is_edit = st.session_state.builder_edit_id is not None
+        if draft_title:
+            prefix = "Editing" if is_edit else "Creating"
+            st.markdown(f"#### {prefix}: {draft_title}")
+        elif not is_edit:
+            st.markdown("#### New Dashboard")
 
     # Progress indicator
     steps = ["My Dashboards", "Details", "Sections", "Preview & Save"]
