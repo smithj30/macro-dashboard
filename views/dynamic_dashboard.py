@@ -156,13 +156,14 @@ def _compute_data_range(
     return result
 
 
-def _section_controls_dynamic(
+def _section_title_with_settings(
+    title: str,
     sec: Dict[str, Any],
     config: Dict[str, Any],
     data_range: Optional[Dict[str, Dict[str, float]]] = None,
     has_dual_axis: Optional[bool] = None,
 ) -> None:
-    """Settings expander for a dynamic section; saves updated config on submit."""
+    """Render chart title with a gear-icon popover for chart settings."""
     section_id = sec.get("id", "")
     allowed_types = ["line", "bar", "area"]
     current_type = sec.get("chart_type", "line")
@@ -180,89 +181,93 @@ def _section_controls_dynamic(
     default_ymin2 = dr["secondary"]["min"]
     default_ymax2 = dr["secondary"]["max"]
 
-    with st.expander("⚙ Chart Settings", expanded=False):
-        new_chart_type = st.selectbox(
-            "Chart type",
-            options=allowed_types,
-            index=allowed_types.index(current_type),
-            key=f"dyn_ct_{section_id}",
-        )
-
-        st.caption(f"Data range: {default_ymin:,.2f} – {default_ymax:,.2f}")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            en_ymin = st.checkbox(
-                "Set Y min",
-                value=y_axis.get("min") is not None,
-                key=f"dyn_en_ymin_{section_id}",
-            )
-            y_min_val = st.number_input(
-                "Y min",
-                value=float(y_axis["min"]) if y_axis.get("min") is not None else default_ymin,
-                key=f"dyn_ymin_{section_id}",
-                disabled=not en_ymin,
-            )
-        with col_b:
-            en_ymax = st.checkbox(
-                "Set Y max",
-                value=y_axis.get("max") is not None,
-                key=f"dyn_en_ymax_{section_id}",
-            )
-            y_max_val = st.number_input(
-                "Y max",
-                value=float(y_axis["max"]) if y_axis.get("max") is not None else default_ymax,
-                key=f"dyn_ymax_{section_id}",
-                disabled=not en_ymax,
+    _title_col, _gear_col = st.columns([20, 1])
+    with _title_col:
+        st.subheader(title)
+    with _gear_col:
+        with st.popover("⚙", use_container_width=True):
+            new_chart_type = st.selectbox(
+                "Chart type",
+                options=allowed_types,
+                index=allowed_types.index(current_type),
+                key=f"dyn_ct_{section_id}",
             )
 
-        if has_secondary:
-            st.caption(f"Secondary axis range: {default_ymin2:,.2f} – {default_ymax2:,.2f}")
-            col_c, col_d = st.columns(2)
-            with col_c:
-                en_ymin2 = st.checkbox(
-                    "Set Y2 min",
-                    value=y_axis2.get("min") is not None,
-                    key=f"dyn_en_ymin2_{section_id}",
+            st.caption(f"Data range: {default_ymin:,.2f} – {default_ymax:,.2f}")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                en_ymin = st.checkbox(
+                    "Set Y min",
+                    value=y_axis.get("min") is not None,
+                    key=f"dyn_en_ymin_{section_id}",
                 )
-                y_min2_val = st.number_input(
-                    "Y2 min",
-                    value=float(y_axis2["min"]) if y_axis2.get("min") is not None else default_ymin2,
-                    key=f"dyn_ymin2_{section_id}",
-                    disabled=not en_ymin2,
+                y_min_val = st.number_input(
+                    "Y min",
+                    value=float(y_axis["min"]) if y_axis.get("min") is not None else default_ymin,
+                    key=f"dyn_ymin_{section_id}",
+                    disabled=not en_ymin,
                 )
-            with col_d:
-                en_ymax2 = st.checkbox(
-                    "Set Y2 max",
-                    value=y_axis2.get("max") is not None,
-                    key=f"dyn_en_ymax2_{section_id}",
+            with col_b:
+                en_ymax = st.checkbox(
+                    "Set Y max",
+                    value=y_axis.get("max") is not None,
+                    key=f"dyn_en_ymax_{section_id}",
                 )
-                y_max2_val = st.number_input(
-                    "Y2 max",
-                    value=float(y_axis2["max"]) if y_axis2.get("max") is not None else default_ymax2,
-                    key=f"dyn_ymax2_{section_id}",
-                    disabled=not en_ymax2,
+                y_max_val = st.number_input(
+                    "Y max",
+                    value=float(y_axis["max"]) if y_axis.get("max") is not None else default_ymax,
+                    key=f"dyn_ymax_{section_id}",
+                    disabled=not en_ymax,
                 )
-        else:
-            en_ymin2 = en_ymax2 = False
-            y_min2_val = y_max2_val = 0.0
 
-        if st.button("Save settings", key=f"dyn_save_{section_id}"):
-            new_cfg = copy.deepcopy(config)
-            for s in new_cfg.get("sections", []):
-                if s.get("id") == section_id:
-                    s["chart_type"] = new_chart_type
-                    s["y_axis"] = {
-                        "min": float(y_min_val) if en_ymin else None,
-                        "max": float(y_max_val) if en_ymax else None,
-                    }
-                    if has_secondary:
-                        s["y_axis2"] = {
-                            "min": float(y_min2_val) if en_ymin2 else None,
-                            "max": float(y_max2_val) if en_ymax2 else None,
+            if has_secondary:
+                st.caption(f"Secondary axis range: {default_ymin2:,.2f} – {default_ymax2:,.2f}")
+                col_c, col_d = st.columns(2)
+                with col_c:
+                    en_ymin2 = st.checkbox(
+                        "Set Y2 min",
+                        value=y_axis2.get("min") is not None,
+                        key=f"dyn_en_ymin2_{section_id}",
+                    )
+                    y_min2_val = st.number_input(
+                        "Y2 min",
+                        value=float(y_axis2["min"]) if y_axis2.get("min") is not None else default_ymin2,
+                        key=f"dyn_ymin2_{section_id}",
+                        disabled=not en_ymin2,
+                    )
+                with col_d:
+                    en_ymax2 = st.checkbox(
+                        "Set Y2 max",
+                        value=y_axis2.get("max") is not None,
+                        key=f"dyn_en_ymax2_{section_id}",
+                    )
+                    y_max2_val = st.number_input(
+                        "Y2 max",
+                        value=float(y_axis2["max"]) if y_axis2.get("max") is not None else default_ymax2,
+                        key=f"dyn_ymax2_{section_id}",
+                        disabled=not en_ymax2,
+                    )
+            else:
+                en_ymin2 = en_ymax2 = False
+                y_min2_val = y_max2_val = 0.0
+
+            if st.button("Save settings", key=f"dyn_save_{section_id}"):
+                new_cfg = copy.deepcopy(config)
+                for s in new_cfg.get("sections", []):
+                    if s.get("id") == section_id:
+                        s["chart_type"] = new_chart_type
+                        s["y_axis"] = {
+                            "min": float(y_min_val) if en_ymin else None,
+                            "max": float(y_max_val) if en_ymax else None,
                         }
-                    break
-            save_config(new_cfg)
-            st.rerun()
+                        if has_secondary:
+                            s["y_axis2"] = {
+                                "min": float(y_min2_val) if en_ymin2 else None,
+                                "max": float(y_max2_val) if en_ymax2 else None,
+                            }
+                        break
+                save_config(new_cfg)
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -275,10 +280,11 @@ def _render_chart_section(
     config: Dict[str, Any],
 ) -> None:
     """Load series, build chart, apply clip arrows, render controls."""
-    st.subheader(sec.get("title", "Chart"))
+    _sec_title = sec.get("title", "Chart")
 
     series_defs = sec.get("series", [])
     if not series_defs:
+        st.subheader(_sec_title)
         st.info("No series configured for this section.")
         return
 
@@ -310,8 +316,8 @@ def _render_chart_section(
             st.warning(err)
 
     if not frames:
+        st.subheader(_sec_title)
         st.warning("Could not load any series for this section.")
-        _section_controls_dynamic(sec, config)
         return
 
     merged = frames[0]
@@ -338,7 +344,7 @@ def _render_chart_section(
     )
 
     data_range = _compute_data_range(merged, dual_axis_col)
-    _section_controls_dynamic(sec, config, data_range=data_range)
+    _section_title_with_settings(_sec_title, sec, config, data_range=data_range)
     apply_style(fig)
     fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)
@@ -363,10 +369,10 @@ def _render_catalog_chart_section(
         return
 
     title = sec.get("title_override") or item.get("title", "Chart")
-    st.subheader(title)
 
     series_defs = item.get("series", [])
     if not series_defs:
+        st.subheader(title)
         st.info("No series configured for this chart.")
         return
 
@@ -547,7 +553,7 @@ def _render_catalog_chart_section(
         fig.update_layout(xaxis=dict(range=[_range_start.strftime("%Y-%m-%d"), _range_end.strftime("%Y-%m-%d")]))
 
     data_range = _compute_data_range(merged, dual_axis_col)
-    _section_controls_dynamic(sec, config, data_range=data_range, has_dual_axis=dual_axis_col is not None)
+    _section_title_with_settings(title, sec, config, data_range=data_range, has_dual_axis=dual_axis_col is not None)
     apply_style(fig)
     fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)

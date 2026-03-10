@@ -9,7 +9,6 @@ import pandas as pd
 import numpy as np
 
 # ── Dashboard views ───────────────────────────────────────────────────────────
-from views.reindustrialization import render as render_reindustrialization
 from views.dynamic_dashboard import render as render_dynamic
 from views.dashboard_builder import render as render_builder
 from views.feed_manager import render as render_feed_manager
@@ -95,6 +94,9 @@ st.markdown(
     [data-testid="stMetricValue"] { font-size: 1.3rem !important; }
     [data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
     [data-testid="stMetricDelta"] { font-size: 0.78rem !important; }
+    /* Hide heading anchor link icons */
+    h1 a, h2 a, h3 a, h4 a, h5 a, h6 a,
+    [data-testid="stHeaderActionElements"] { display: none !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -106,11 +108,11 @@ st.markdown(
 _dynamic_dashboards = list_dynamic_dashboards()
 _dynamic_page_map = {cfg["title"]: cfg for cfg in _dynamic_dashboards}
 
-_DASHBOARD_PAGES = ["US Reindustrialization"] + [cfg["title"] for cfg in _dynamic_dashboards]
+_DASHBOARD_PAGES = [cfg["title"] for cfg in _dynamic_dashboards]
 _TOOL_PAGES = ["Data Explorer", "Feed Manager", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Tag Manager", "Regression & Analysis", "Data Table"]
 
 if "page" not in st.session_state:
-    st.session_state.page = "US Reindustrialization"
+    st.session_state.page = _DASHBOARD_PAGES[0] if _DASHBOARD_PAGES else _TOOL_PAGES[0]
 
 # ── Session state initialisation ──────────────────────────────────────────────
 
@@ -235,13 +237,10 @@ page = st.session_state.page
 
 
 # =============================================================================
-# PAGE: US REINDUSTRIALIZATION (dashboard)
+# PAGE: DYNAMIC DASHBOARDS
 # =============================================================================
 
-if page == "US Reindustrialization":
-    render_reindustrialization()
-
-elif page in _dynamic_page_map:
+if page in _dynamic_page_map:
     render_dynamic(_dynamic_page_map[page])
 
 
