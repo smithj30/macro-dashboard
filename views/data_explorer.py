@@ -117,8 +117,6 @@ def render():
     with tabs[5]:
         _render_computed_tab()
 
-    st.markdown("---")
-    _render_preview_section()
 
 
 # ---------------------------------------------------------------------------
@@ -165,31 +163,33 @@ def _render_fred_tab():
 
     if "fred_search_results" in st.session_state:
         results = st.session_state["fred_search_results"]
-        st.markdown(f"**{len(results)} result(s)** -- click a row to select it:")
-        _ds_event = st.dataframe(
-            results, use_container_width=True, height=250,
-            selection_mode="single-row", on_select="rerun",
-            key="ds_fred_results_table",
-        )
-        _ds_sel = _ds_event.selection.rows
-        _ds_prev = st.session_state.get("_ds_prev_fred_sel", [])
-        if _ds_sel != _ds_prev:
-            st.session_state["_ds_prev_fred_sel"] = _ds_sel
-            if _ds_sel:
-                _ds_row = results.iloc[_ds_sel[0]]
-                st.session_state["fred_series_id"] = str(_ds_row["id"])
-                if "title" in _ds_row:
-                    st.session_state["fred_name"] = str(_ds_row["title"])[:80]
+        st.markdown(f"**{len(results)} result(s)** -- check one to load:")
+        # Show checkboxes for series selection
+        if "fred_checked_id" not in st.session_state:
+            st.session_state["fred_checked_id"] = None
 
-        if _ds_sel:
-            _ds_row = results.iloc[_ds_sel[0]]
-            st.info(
-                f"**{_ds_row['id']}** -- {_ds_row.get('title', '')}  \n"
-                "Series ID and name pre-filled below. Adjust dates if needed, then click **Load Series**."
+        for idx, row in results.iterrows():
+            sid = str(row["id"])
+            title_text = row.get("title", "")
+            freq = row.get("frequency_short", row.get("frequency", ""))
+            units = row.get("units_short", row.get("units", ""))
+            label = f"**{sid}** — {title_text}"
+            if freq:
+                label += f"  ({freq})"
+            checked = st.checkbox(
+                label,
+                value=(st.session_state.get("fred_checked_id") == sid),
+                key=f"fred_chk_{sid}",
             )
+            if checked and st.session_state.get("fred_checked_id") != sid:
+                st.session_state["fred_checked_id"] = sid
+                st.session_state["fred_series_id"] = sid
+                st.session_state["fred_name"] = str(title_text)[:80]
+                st.rerun()
+            elif not checked and st.session_state.get("fred_checked_id") == sid:
+                st.session_state["fred_checked_id"] = None
 
     st.markdown("---")
-    st.markdown("**Load a Series by ID**")
 
     col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
@@ -203,15 +203,8 @@ def _render_fred_tab():
     with col_c:
         end_date = st.date_input("End Date Override", value=None, key="fred_end")
 
-    units_multiplier = st.number_input(
-        "Units Multiplier (e.g. 0.001 to convert to thousands)",
-        value=1.0,
-        format="%g",
-        key="fred_units_multiplier",
-    )
-
     custom_name = st.text_input(
-        "Dataset name (optional)",
+        "Feed name",
         placeholder="Leave blank to use Series ID",
         key="fred_name",
     ).strip()
@@ -227,8 +220,6 @@ def _render_fred_tab():
                         start_date=str(start_date) if start_date else None,
                         end_date=str(end_date) if end_date else None,
                     )
-                    if units_multiplier != 1.0:
-                        df = df * units_multiplier
                     name = custom_name or series_id
                     add_to_catalog(name, df)
 
@@ -243,10 +234,23 @@ def _render_fred_tab():
                     except Exception:
                         pass
                     st.session_state.de_source_meta = meta
-
-                    st.success(f"Loaded **{name}** — select it in the Preview section below.")
+                    st.session_state["fred_preview_name"] = name
                 except Exception as e:
                     st.error(f"Failed to load series: {e}")
+
+    # ── Inline preview + save-as-feed ────────────────────────────────────────
+    _prev_name = st.session_state.get("fred_preview_name")
+    if _prev_name and _prev_name in st.session_state.get("catalog", {}):
+        df_prev = st.session_state.catalog[_prev_name]
+        if not df_prev.empty:
+            st.markdown("---")
+            fig = time_series_chart(df_prev, title=_prev_name)
+            fig = apply_style(fig)
+            fig = apply_range_slider(fig, visible=True)
+            st.plotly_chart(fig, use_container_width=True, key="fred_preview_chart")
+
+            # Save as Feed form (always visible)
+            _render_save_as_feed(_prev_name, df_prev)
 
 
 # ---------------------------------------------------------------------------
@@ -621,119 +625,67 @@ def _render_computed_tab():
 
 
 # ---------------------------------------------------------------------------
-# Shared Preview Section
-# ---------------------------------------------------------------------------
-
-def _render_preview_section():
-    st.subheader("Preview")
-
-    names = catalog_names()
-    if not names:
-        st.caption("Load a dataset above to preview it here.")
-        return
-
-    selected = st.selectbox("Dataset", names, key="de_preview_dataset")
-    if not selected or selected not in st.session_state.catalog:
-        return
-
-    df = st.session_state.catalog[selected]
-
-    # Date range filter
-    if isinstance(df.index, pd.DatetimeIndex) and len(df) > 0:
-        idx_min = df.index.min().date()
-        idx_max = df.index.max().date()
-        col_from, col_to = st.columns(2)
-        with col_from:
-            range_from = st.date_input("From", value=idx_min, min_value=idx_min, max_value=idx_max, key="de_prev_from")
-        with col_to:
-            range_to = st.date_input("To", value=idx_max, min_value=idx_min, max_value=idx_max, key="de_prev_to")
-        mask = (df.index >= pd.Timestamp(range_from)) & (df.index <= pd.Timestamp(range_to))
-        df_filtered = df.loc[mask]
-    else:
-        df_filtered = df
-
-    # Column selector for multi-column datasets
-    num_cols = get_numeric_columns(df_filtered)
-    if len(num_cols) > 1:
-        show_cols = st.multiselect(
-            "Columns to show", num_cols, default=num_cols[:5], key="de_prev_cols"
-        )
-        if show_cols:
-            df_filtered = df_filtered[show_cols]
-
-    if df_filtered.empty:
-        st.info("No data in the selected range.")
-        return
-
-    # Chart
-    fig = time_series_chart(df_filtered, title=selected)
-    fig = apply_style(fig)
-    fig = apply_range_slider(fig, visible=True)
-    st.plotly_chart(fig, use_container_width=True, key="de_preview_chart")
-
-    # Save as Feed
-    _render_save_as_feed(selected, df_filtered)
-
-
-# ---------------------------------------------------------------------------
 # Save as Feed
 # ---------------------------------------------------------------------------
 
 def _render_save_as_feed(dataset_name: str, df: pd.DataFrame):
     """Inline form to save the current preview dataset as a persistent feed."""
-    st.markdown("---")
-    st.subheader("Save as Feed")
     meta = st.session_state.get("de_source_meta", {})
+    provider = meta.get("provider", "")
+    sid = meta.get("series_id", "")
 
-    # Pre-fill from source metadata
+    st.markdown("**Save as Feed**")
+
     feed_name = st.text_input(
         "Feed name",
         value=meta.get("dataset_name", dataset_name),
         key="de_saf_name",
     )
-    provider = st.text_input(
-        "Provider",
-        value=meta.get("provider", ""),
-        key="de_saf_provider",
-    )
-    sid = st.text_input(
-        "Series ID",
-        value=meta.get("series_id", ""),
-        key="de_saf_series_id",
-    )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        frequency = st.text_input(
-            "Frequency",
-            value=meta.get("frequency", ""),
-            key="de_saf_freq",
-        )
-    with col2:
-        units = st.text_input(
-            "Units",
-            value=meta.get("units", ""),
-            key="de_saf_units",
-        )
+    # Tag picker
+    try:
+        from modules.config.tag_catalog import list_tags as _saf_list_tags
+        _all_tags = _saf_list_tags()
+        _tag_names = [t["name"] for t in _all_tags] if _all_tags else []
+    except Exception:
+        _tag_names = []
 
-    tags_str = st.text_input("Tags (comma-separated)", key="de_saf_tags")
+    if _tag_names:
+        selected_tags = st.multiselect("Tags", options=_tag_names, key="de_saf_tags_ms")
+    else:
+        tags_str = st.text_input("Tags (comma-separated)", key="de_saf_tags")
+        selected_tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+    # Show provider details in an expander for advanced users
+    with st.expander("Advanced", expanded=False):
+        provider = st.text_input("Provider", value=provider, key="de_saf_provider")
+        sid = st.text_input("Series ID", value=sid, key="de_saf_series_id")
+        col1, col2 = st.columns(2)
+        with col1:
+            frequency = st.text_input("Frequency", value=meta.get("frequency", ""), key="de_saf_freq")
+        with col2:
+            units = st.text_input("Units", value=meta.get("units", ""), key="de_saf_units")
+
+    # Read widget values from session state (widgets inside expander may not be in local scope)
+    _saf_provider = st.session_state.get("de_saf_provider", provider)
+    _saf_sid = st.session_state.get("de_saf_series_id", sid)
+    _saf_freq = st.session_state.get("de_saf_freq", "")
+    _saf_units = st.session_state.get("de_saf_units", "")
 
     if st.button("Save as Feed", key="de_saf_save_btn", type="primary", use_container_width=True):
-        if not feed_name.strip() or not provider.strip():
+        if not feed_name.strip() or not _saf_provider.strip():
             st.warning("Feed name and provider are required.")
         else:
-            # Duplicate check
-            existing = find_feed(provider.strip(), sid.strip())
+            existing = find_feed(_saf_provider.strip(), _saf_sid.strip())
             if existing:
                 st.warning(
-                    f"A feed with provider=`{provider}` and series_id=`{sid}` "
+                    f"A feed with provider=`{_saf_provider}` and series_id=`{_saf_sid}` "
                     f"already exists: **{existing['name']}** (`{existing['id']}`)"
                 )
             else:
-                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
-                params = {"series_id": sid.strip()}
-                # For computed feeds, pass through operation params
-                if provider.strip() == "computed" and meta.get("operand_a"):
+                tags = list(selected_tags)
+                params = {"series_id": _saf_sid.strip()}
+                if _saf_provider.strip() == "computed" and meta.get("operand_a"):
                     params = {
                         "operand_a": meta["operand_a"],
                         "operand_b": meta["operand_b"],
@@ -741,10 +693,10 @@ def _render_save_as_feed(dataset_name: str, df: pd.DataFrame):
                     }
                 new_feed = create_feed(
                     name=feed_name.strip(),
-                    provider=provider.strip(),
-                    series_id=sid.strip(),
-                    frequency=frequency.strip(),
-                    units=units.strip(),
+                    provider=_saf_provider.strip(),
+                    series_id=_saf_sid.strip(),
+                    frequency=_saf_freq.strip(),
+                    units=_saf_units.strip(),
                     tags=tags,
                     params=params,
                 )

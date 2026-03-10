@@ -194,59 +194,53 @@ def _section_title_with_settings(
             )
 
             st.caption(f"Data range: {default_ymin:,.2f} – {default_ymax:,.2f}")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                en_ymin = st.checkbox(
-                    "Set Y min",
-                    value=y_axis.get("min") is not None,
-                    key=f"dyn_en_ymin_{section_id}",
-                )
-                y_min_val = st.number_input(
-                    "Y min",
-                    value=float(y_axis["min"]) if y_axis.get("min") is not None else default_ymin,
-                    key=f"dyn_ymin_{section_id}",
-                    disabled=not en_ymin,
-                )
-            with col_b:
-                en_ymax = st.checkbox(
-                    "Set Y max",
-                    value=y_axis.get("max") is not None,
-                    key=f"dyn_en_ymax_{section_id}",
-                )
-                y_max_val = st.number_input(
-                    "Y max",
-                    value=float(y_axis["max"]) if y_axis.get("max") is not None else default_ymax,
-                    key=f"dyn_ymax_{section_id}",
-                    disabled=not en_ymax,
-                )
+            en_ymin = st.checkbox(
+                "Set Y min",
+                value=y_axis.get("min") is not None,
+                key=f"dyn_en_ymin_{section_id}",
+            )
+            y_min_val = st.number_input(
+                "Y min",
+                value=float(y_axis["min"]) if y_axis.get("min") is not None else default_ymin,
+                key=f"dyn_ymin_{section_id}",
+                disabled=not en_ymin,
+            )
+            en_ymax = st.checkbox(
+                "Set Y max",
+                value=y_axis.get("max") is not None,
+                key=f"dyn_en_ymax_{section_id}",
+            )
+            y_max_val = st.number_input(
+                "Y max",
+                value=float(y_axis["max"]) if y_axis.get("max") is not None else default_ymax,
+                key=f"dyn_ymax_{section_id}",
+                disabled=not en_ymax,
+            )
 
             if has_secondary:
                 st.caption(f"Secondary axis range: {default_ymin2:,.2f} – {default_ymax2:,.2f}")
-                col_c, col_d = st.columns(2)
-                with col_c:
-                    en_ymin2 = st.checkbox(
-                        "Set Y2 min",
-                        value=y_axis2.get("min") is not None,
-                        key=f"dyn_en_ymin2_{section_id}",
-                    )
-                    y_min2_val = st.number_input(
-                        "Y2 min",
-                        value=float(y_axis2["min"]) if y_axis2.get("min") is not None else default_ymin2,
-                        key=f"dyn_ymin2_{section_id}",
-                        disabled=not en_ymin2,
-                    )
-                with col_d:
-                    en_ymax2 = st.checkbox(
-                        "Set Y2 max",
-                        value=y_axis2.get("max") is not None,
-                        key=f"dyn_en_ymax2_{section_id}",
-                    )
-                    y_max2_val = st.number_input(
-                        "Y2 max",
-                        value=float(y_axis2["max"]) if y_axis2.get("max") is not None else default_ymax2,
-                        key=f"dyn_ymax2_{section_id}",
-                        disabled=not en_ymax2,
-                    )
+                en_ymin2 = st.checkbox(
+                    "Set Y2 min",
+                    value=y_axis2.get("min") is not None,
+                    key=f"dyn_en_ymin2_{section_id}",
+                )
+                y_min2_val = st.number_input(
+                    "Y2 min",
+                    value=float(y_axis2["min"]) if y_axis2.get("min") is not None else default_ymin2,
+                    key=f"dyn_ymin2_{section_id}",
+                    disabled=not en_ymin2,
+                )
+                en_ymax2 = st.checkbox(
+                    "Set Y2 max",
+                    value=y_axis2.get("max") is not None,
+                    key=f"dyn_en_ymax2_{section_id}",
+                )
+                y_max2_val = st.number_input(
+                    "Y2 max",
+                    value=float(y_axis2["max"]) if y_axis2.get("max") is not None else default_ymax2,
+                    key=f"dyn_ymax2_{section_id}",
+                    disabled=not en_ymax2,
+                )
             else:
                 en_ymin2 = en_ymax2 = False
                 y_min2_val = y_max2_val = 0.0
