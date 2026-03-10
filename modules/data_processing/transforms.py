@@ -55,6 +55,48 @@ def month_over_month(series: pd.Series) -> pd.Series:
     return result
 
 
+def year_over_year_diff(series: pd.Series) -> pd.Series:
+    """
+    Compute year-over-year absolute change (current value minus value one year ago).
+    Uses the same frequency-detection logic as year_over_year().
+    """
+    freq = pd.infer_freq(series.index)
+    if freq is None:
+        gaps = series.index.to_series().diff().dt.days.dropna()
+        median_gap = gaps.median()
+        if median_gap <= 10:
+            periods = 252
+        elif median_gap <= 35:
+            periods = 12
+        elif median_gap <= 100:
+            periods = 4
+        else:
+            periods = 1
+    elif freq.startswith("M") or freq.startswith("MS"):
+        periods = 12
+    elif freq.startswith("Q"):
+        periods = 4
+    elif freq.startswith("A") or freq.startswith("Y"):
+        periods = 1
+    elif freq.startswith("W"):
+        periods = 52
+    elif freq.startswith("D") or freq.startswith("B"):
+        periods = 252
+    else:
+        periods = 12
+
+    result = series.diff(periods=periods)
+    result.name = f"{series.name} (YoY #)"
+    return result
+
+
+def month_over_month_diff(series: pd.Series) -> pd.Series:
+    """Compute month-over-month absolute change (1-period difference)."""
+    result = series.diff(periods=1)
+    result.name = f"{series.name} (MoM #)"
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Merge / align utilities
 # ---------------------------------------------------------------------------

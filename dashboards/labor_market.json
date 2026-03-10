@@ -48,7 +48,12 @@
       "layout": "half",
       "catalog_id": "labor_force_data",
       "item_id": "item_261bad62",
-      "title_override": "Unemployment Rate"
+      "title_override": "Unemployment Rate",
+      "chart_type": "line",
+      "y_axis": {
+        "min": null,
+        "max": 6.0
+      }
     }
   ]
 }

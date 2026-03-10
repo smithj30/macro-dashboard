@@ -35,6 +35,8 @@ from modules.data_ingestion.fred_loader import load_fred_series
 from modules.data_processing.transforms import (
     year_over_year,
     month_over_month,
+    year_over_year_diff,
+    month_over_month_diff,
     merge_dataframes,
     summary_statistics,
     rolling_mean,
@@ -282,23 +284,29 @@ elif page == "Chart Builder":
         from modules.data_ingestion.fred_loader import load_fred_series as _ld_lfs
         from modules.data_processing.transforms import year_over_year as _ld_yoy
         from modules.data_processing.transforms import month_over_month as _ld_mom
+        from modules.data_processing.transforms import year_over_year_diff as _ld_yoy_diff
+        from modules.data_processing.transforms import month_over_month_diff as _ld_mom_diff
         from modules.data_processing.transforms import rolling_mean as _ld_rm
         from providers import get_provider as _ld_gp
 
-        def _apply_transform(s, tr, rw=12):
+        def _apply_transform(s, tr, rw=None):
+            if rw:
+                s = _ld_rm(s, rw)
             if tr == "yoy":
                 return _ld_yoy(s)
             elif tr == "mom":
                 return _ld_mom(s)
-            elif tr == "rolling":
-                return _ld_rm(s, rw)
+            elif tr == "yoy_diff":
+                return _ld_yoy_diff(s)
+            elif tr == "mom_diff":
+                return _ld_mom_diff(s)
             return s
 
         result = {}
         for sd in series_list:
             tr = sd.get("transform", "none")
             label = sd.get("label", "")
-            rw = sd.get("rolling_window", 12)
+            rw = sd.get("rolling_window") if sd.get("rolling_enabled") else None
             source = sd.get("source", "")
             try:
                 if source == "fred" and sd.get("series_id"):
@@ -525,24 +533,35 @@ elif page == "Chart Builder":
         cb_series = st.session_state.cb_series
         cb_data = st.session_state.cb_data
 
+        _TRANSFORM_LABELS = {
+            "none": "None", "yoy": "YoY %", "mom": "MoM %",
+            "yoy_diff": "YoY #", "mom_diff": "MoM #",
+        }
+
 
         @st.cache_data(ttl=1800, show_spinner=False)
-        def _cb_load_fred(series_id: str, transform: str, rolling_window: int) -> pd.Series:
+        def _cb_load_fred(series_id: str, transform: str, rolling_window: int = 0) -> pd.Series:
             df_fred = load_fred_series(series_id)
             s = df_fred.iloc[:, 0]
+            if rolling_window:
+                s = rolling_mean(s, rolling_window)
             if transform == "yoy":
                 s = year_over_year(s)
             elif transform == "mom":
                 s = month_over_month(s)
-            elif transform == "rolling":
-                s = rolling_mean(s, rolling_window)
+            elif transform == "yoy_diff":
+                s = year_over_year_diff(s)
+            elif transform == "mom_diff":
+                s = month_over_month_diff(s)
             return s
 
         # ── Current Series list ──────────────────────────────────────────────
         if cb_series:
             st.markdown("**Current Series**")
             for idx, _s in enumerate(list(cb_series)):
-                src_info = f"{_s['source']}·{_s['chart_type']}·{_s.get('transform', 'none')}·ax{_s['axis']}"
+                _tr_label = _TRANSFORM_LABELS.get(_s.get('transform', 'none'), _s.get('transform', 'none'))
+                _rolling_label = f"R{_s.get('rolling_window', '')}" if _s.get('rolling_enabled') else ""
+                src_info = f"{_s['source']}·{_s['chart_type']}·{_rolling_label + '→' if _rolling_label else ''}{_tr_label}·ax{_s['axis']}"
                 _ca, _cb, _cc, _cd, _ce = st.columns([4, 1, 1, 1, 1])
                 with _ca:
                     st.markdown(
@@ -582,21 +601,33 @@ elif page == "Chart Builder":
                                 key=f"cb_ed_ctype_{idx}",
                             )
                         with _ed_c2:
-                            _transform_opts = ["none", "yoy", "mom", "rolling"]
+                            _transform_opts = ["none", "yoy", "mom", "yoy_diff", "mom_diff"]
                             _cur_tr = _s.get("transform", "none")
+                            # Migrate legacy "rolling" transform → rolling_enabled
+                            if _cur_tr == "rolling":
+                                _cur_tr = "none"
                             _ed_transform = st.selectbox(
                                 "Transform",
                                 _transform_opts,
                                 index=_transform_opts.index(_cur_tr) if _cur_tr in _transform_opts else 0,
+                                format_func=lambda x: _TRANSFORM_LABELS.get(x, x),
                                 key=f"cb_ed_transform_{idx}",
                             )
-                            _ed_rolling = st.number_input(
-                                "Rolling window",
-                                min_value=2, max_value=120,
-                                value=_s.get("rolling_window", 12),
-                                key=f"cb_ed_rolling_{idx}",
-                                disabled=(_ed_transform != "rolling"),
-                            )
+                            _rc1, _rc2 = st.columns([1, 1])
+                            with _rc1:
+                                _ed_rolling_on = st.checkbox(
+                                    "Rolling avg",
+                                    value=_s.get("rolling_enabled", _s.get("transform") == "rolling"),
+                                    key=f"cb_ed_rolling_on_{idx}",
+                                )
+                            with _rc2:
+                                _ed_rolling = st.number_input(
+                                    "Window",
+                                    min_value=2, max_value=120,
+                                    value=_s.get("rolling_window", 12),
+                                    key=f"cb_ed_rolling_{idx}",
+                                    disabled=(not _ed_rolling_on),
+                                )
                         _ed_axis = st.selectbox(
                             "Axis", [1, 2],
                             index=[1, 2].index(_s.get("axis", 1)),
@@ -609,7 +640,8 @@ elif page == "Chart Builder":
                                 cb_series[idx]["label"] = _ed_label.strip() or old_label
                                 cb_series[idx]["chart_type"] = _ed_chart_type
                                 cb_series[idx]["transform"] = _ed_transform
-                                cb_series[idx]["rolling_window"] = int(_ed_rolling)
+                                cb_series[idx]["rolling_enabled"] = _ed_rolling_on
+                                cb_series[idx]["rolling_window"] = int(_ed_rolling) if _ed_rolling_on else None
                                 cb_series[idx]["axis"] = int(_ed_axis)
                                 # Re-fetch data if transform or label changed
                                 new_label = cb_series[idx]["label"]
@@ -677,10 +709,11 @@ elif page == "Chart Builder":
                     with _ff_col2:
                         cb_feed_transform = st.selectbox(
                             "Transform",
-                            ["none", "yoy", "mom", "rolling"],
+                            ["none", "yoy", "mom", "yoy_diff", "mom_diff"],
+                            format_func=lambda x: _TRANSFORM_LABELS.get(x, x),
                             key="cb_feed_transform",
                         )
-                    _ff_col3, _ff_col4, _ff_col5 = st.columns([2, 1, 1])
+                    _ff_col3, _ff_col4, _ff_col5, _ff_col6 = st.columns([2, 1, 1, 1])
                     with _ff_col3:
                         cb_feed_type = st.selectbox(
                             "Chart type", ["line", "bar", "area"], key="cb_feed_chart_type"
@@ -688,13 +721,15 @@ elif page == "Chart Builder":
                     with _ff_col4:
                         cb_feed_axis = st.selectbox("Axis", [1, 2], key="cb_feed_axis")
                     with _ff_col5:
+                        cb_feed_rolling_on = st.checkbox("Rolling avg", key="cb_feed_rolling_on")
+                    with _ff_col6:
                         cb_feed_rolling = st.number_input(
                             "Window",
                             min_value=2,
                             max_value=120,
                             value=12,
                             key="cb_feed_rolling",
-                            disabled=(cb_feed_transform != "rolling"),
+                            disabled=(not cb_feed_rolling_on),
                         )
 
                     if st.button("+ Add Series", key="cb_feed_add", use_container_width=True):
@@ -708,12 +743,16 @@ elif page == "Chart Builder":
                                 _f_df = _f_prov.fetch_series(_fp_sel["series_id"], **_f_kwargs)
                                 if _f_df is not None and not _f_df.empty:
                                     _f_s = _f_df.iloc[:, 0].rename(_label)
+                                    if cb_feed_rolling_on:
+                                        _f_s = rolling_mean(_f_s, int(cb_feed_rolling))
                                     if cb_feed_transform == "yoy":
                                         _f_s = year_over_year(_f_s)
                                     elif cb_feed_transform == "mom":
                                         _f_s = month_over_month(_f_s)
-                                    elif cb_feed_transform == "rolling":
-                                        _f_s = rolling_mean(_f_s, int(cb_feed_rolling))
+                                    elif cb_feed_transform == "yoy_diff":
+                                        _f_s = year_over_year_diff(_f_s)
+                                    elif cb_feed_transform == "mom_diff":
+                                        _f_s = month_over_month_diff(_f_s)
                                     cb_data[_label] = _f_s
                                     cb_series.append({
                                         "label": _label,
@@ -722,7 +761,8 @@ elif page == "Chart Builder":
                                         "source": "feed",
                                         "feed_id": _fp_sel["id"],
                                         "transform": cb_feed_transform,
-                                        "rolling_window": int(cb_feed_rolling),
+                                        "rolling_enabled": cb_feed_rolling_on,
+                                        "rolling_window": int(cb_feed_rolling) if cb_feed_rolling_on else None,
                                     })
                                     st.rerun()
                                 else:
@@ -785,7 +825,8 @@ elif page == "Chart Builder":
                             "axis": comp_axis,
                             "source": "computed",
                             "transform": "none",
-                            "rolling_window": 12,
+                            "rolling_enabled": False,
+                            "rolling_window": None,
                             "op": _op,
                             "series_a": comp_a,
                             "series_b": comp_b,
