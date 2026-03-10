@@ -12,6 +12,19 @@
       "layout": "half",
       "catalog_id": "manufacturing_charts",
       "item_id": "item_bc5e8017",
+      "title_override": null,
+      "chart_type": "line",
+      "y_axis": {
+        "min": -10.0,
+        "max": 15.0
+      }
+    },
+    {
+      "id": "sec_66821109",
+      "type": "catalog_chart",
+      "layout": "half",
+      "catalog_id": "manufacturing",
+      "item_id": "item_7e18598a",
       "title_override": null
     }
   ]

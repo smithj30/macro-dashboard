@@ -73,16 +73,28 @@ st.markdown(
     """
     <style>
     [data-testid="stSidebar"] { min-width: 260px; max-width: 320px; }
+    .block-container { padding-top: 1rem !important; padding-bottom: 0.5rem !important; max-width: 100% !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
+    .main .block-container { width: 100% !important; }
     .metric-card {
         background: #FAF9F9;
         border: 1px solid #E1DBD4;
         border-radius: 8px;
-        padding: 12px 16px;
-        margin: 4px 0;
+        padding: 10px 14px;
+        margin: 3px 0;
     }
-    h1 { font-size: 1.8rem !important; }
-    h2 { font-size: 1.3rem !important; border-bottom: 1px solid #E1DBD4; padding-bottom: 4px; }
-    h3 { font-size: 1.1rem !important; }
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.1rem !important; border-bottom: 1px solid #E1DBD4; padding-bottom: 4px; }
+    h3 { font-size: 0.95rem !important; }
+    p, li, label, .stMarkdown, .stCaption, [data-testid="stText"] {
+        font-size: 0.9rem !important;
+    }
+    .stButton button {
+        font-size: 0.82rem !important;
+        padding: 0.3rem 0.8rem !important;
+    }
+    [data-testid="stMetricValue"] { font-size: 1.3rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
+    [data-testid="stMetricDelta"] { font-size: 0.78rem !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -112,8 +124,6 @@ if "zillow_cache" not in st.session_state:
 
 if "cb_recent_fred" not in st.session_state:
     st.session_state.cb_recent_fred = []   # list[{id, title}], max 10
-if "cb_pending_dataset" not in st.session_state:
-    st.session_state.cb_pending_dataset = None  # str | None
 
 # Chart/Card catalog state
 if "cb_item_id" not in st.session_state:
@@ -127,13 +137,9 @@ if "cb_edit_request" not in st.session_state:
 if "cb_editing_idx" not in st.session_state:
     st.session_state.cb_editing_idx = None
 
-# Card-specific session state (new format: dataset/column based)
-if "cb_card_dataset" not in st.session_state:
-    st.session_state.cb_card_dataset = ""
-if "cb_card_column" not in st.session_state:
-    st.session_state.cb_card_column = ""
-if "cb_card_fred_id" not in st.session_state:
-    st.session_state.cb_card_fred_id = ""
+# Card-specific session state (feed-based)
+if "cb_card_feed_id" not in st.session_state:
+    st.session_state.cb_card_feed_id = None
 if "cb_card_title" not in st.session_state:
     st.session_state.cb_card_title = ""
 if "cb_card_value_format" not in st.session_state:
@@ -216,25 +222,6 @@ with st.sidebar:
             st.session_state.page = _p
             st.rerun()
 
-    # Loaded Datasets — always visible
-    st.markdown("---")
-    st.markdown("**Loaded Datasets**")
-    if st.session_state.catalog:
-        for _ds_name, _ds_df in st.session_state.catalog.items():
-            _dc1, _dc2 = st.columns([4, 1])
-            with _dc1:
-                st.caption(f"`{_ds_name}`  \n{len(_ds_df):,} rows · {len(_ds_df.columns)} col(s)")
-            with _dc2:
-                if st.button("→", key=f"sb_ds_{_ds_name}", help="Use in Chart Builder"):
-                    st.session_state.cb_pending_dataset = _ds_name
-                    st.session_state.page = "Chart Builder"
-                    st.rerun()
-        if st.button("Clear All Data", use_container_width=True):
-            st.session_state.catalog = {}
-            st.session_state.zillow_cache = None
-            st.rerun()
-    else:
-        st.caption("No datasets loaded yet.")
 
     if st.session_state.get("cb_recent_fred"):
         st.markdown("**Recent FRED**")
@@ -348,20 +335,26 @@ elif page == "Chart Builder":
                         s = df.iloc[:, 0]
                         result[label] = _apply_transform(s, tr, rw)
 
-                elif source == "computed" and sd.get("op") == "div":
+                elif source == "computed" and sd.get("op"):
                     sa_name = sd.get("series_a", "")
                     sb_name = sd.get("series_b", "")
-                    # Try loading both operands from session catalog or FRED
-                    def _get_series(name):
-                        if name in st.session_state.get("catalog", {}):
-                            return st.session_state.catalog[name].iloc[:, 0].dropna()
-                        df = _ld_lfs(name)
-                        return df.iloc[:, 0]
-                    sa = _get_series(sa_name)
-                    sb = _get_series(sb_name)
-                    sa_aligned, sb_aligned = sa.align(sb, join="inner")
-                    s = sa_aligned / sb_aligned
-                    result[label] = _apply_transform(s, tr, rw)
+                    # Look up operands from already-built result dict
+                    if sa_name in result and sb_name in result:
+                        sa, sb = result[sa_name].align(result[sb_name], join="inner")
+                        _op = sd["op"]
+                        if _op == "div":
+                            s = sa / sb
+                        elif _op == "sub":
+                            s = sa - sb
+                        elif _op == "add":
+                            s = sa + sb
+                        elif _op == "mul":
+                            s = sa * sb
+                        elif _op == "pct_diff":
+                            s = (sa - sb) / sb * 100
+                        else:
+                            continue
+                        result[label] = _apply_transform(s, tr, rw)
 
             except Exception:
                 pass
@@ -393,9 +386,16 @@ elif page == "Chart Builder":
                 st.session_state["cb_show_legend"] = _er_item.get("show_legend", True)
                 st.session_state.cb_data = _load_chart_series_data(_er_item.get("series", []))
             else:
-                st.session_state.cb_card_dataset = _er_item.get("dataset_name", "")
-                st.session_state.cb_card_column = _er_item.get("column", "")
-                st.session_state.cb_card_fred_id = _er_item.get("fred_series_id", "")
+                # Feed-first: use feed_id if present, else try to resolve from old format
+                _er_feed_id = _er_item.get("feed_id")
+                if not _er_feed_id:
+                    _er_fred_id = _er_item.get("fred_series_id", "")
+                    if _er_fred_id:
+                        from modules.config.feed_catalog import find_feed as _er_find
+                        _er_found = _er_find("fred", _er_fred_id)
+                        if _er_found:
+                            _er_feed_id = _er_found["id"]
+                st.session_state.cb_card_feed_id = _er_feed_id
                 st.session_state.cb_card_title = _er_item.get("title", "")
                 st.session_state.cb_card_value_format = _er_item.get("value_format", ",.2f")
                 st.session_state.cb_card_value_suffix = _er_item.get("value_suffix", "")
@@ -451,9 +451,16 @@ elif page == "Chart Builder":
                                     st.session_state["cb_show_legend"] = _loaded.get("show_legend", True)
                                     st.session_state.cb_data = _load_chart_series_data(_loaded.get("series", []))
                                 else:
-                                    st.session_state.cb_card_dataset = _loaded.get("dataset_name", "")
-                                    st.session_state.cb_card_column = _loaded.get("column", "")
-                                    st.session_state.cb_card_fred_id = _loaded.get("fred_series_id", "")
+                                    # Feed-first: use feed_id if present, else resolve
+                                    _ld_feed_id = _loaded.get("feed_id")
+                                    if not _ld_feed_id:
+                                        _ld_fred_id = _loaded.get("fred_series_id", "")
+                                        if _ld_fred_id:
+                                            from modules.config.feed_catalog import find_feed as _ld_find
+                                            _ld_found = _ld_find("fred", _ld_fred_id)
+                                            if _ld_found:
+                                                _ld_feed_id = _ld_found["id"]
+                                    st.session_state.cb_card_feed_id = _ld_feed_id
                                     st.session_state.cb_card_title = _loaded.get("title", "")
                                     st.session_state.cb_card_value_format = _loaded.get("value_format", ",.2f")
                                     st.session_state.cb_card_value_suffix = _loaded.get("value_suffix", "")
@@ -473,9 +480,7 @@ elif page == "Chart Builder":
                 st.session_state.cb_catalog_id = None
                 st.session_state.cb_series = []
                 st.session_state.cb_data = {}
-                st.session_state.cb_card_dataset = ""
-                st.session_state.cb_card_column = ""
-                st.session_state.cb_card_fred_id = ""
+                st.session_state.cb_card_feed_id = None
                 st.session_state.cb_card_title = ""
                 st.session_state.cb_card_delta_type = "none"
                 st.rerun()
@@ -521,11 +526,6 @@ elif page == "Chart Builder":
         cb_series = st.session_state.cb_series
         cb_data = st.session_state.cb_data
 
-        # Pre-select catalog dataset when navigating from sidebar
-        if st.session_state.cb_pending_dataset:
-            st.session_state["cb_source"] = "From catalog"
-            st.session_state["cb_cat_dataset"] = st.session_state.cb_pending_dataset
-            st.session_state.cb_pending_dataset = None
 
         @st.cache_data(ttl=1800, show_spinner=False)
         def _cb_load_fred(series_id: str, transform: str, rolling_window: int) -> pd.Series:
@@ -651,84 +651,10 @@ elif page == "Chart Builder":
 
         st.markdown("---")
 
-        # ── Add Series / From Feed / Computed Series tabs ────────────────────
-        tab_add, tab_feed, tab_computed = st.tabs(["From Catalog", "From Feed", "Computed"])
+        # ── Add Series / Computed Series tabs ─────────────────────────────────
+        tab_add, tab_computed = st.tabs(["Add Series", "Computed"])
 
         with tab_add:
-            # Series come from loaded datasets only (load data in Data Sources first)
-            if not st.session_state.catalog:
-                st.info("No datasets loaded yet. Go to **Data Sources** to load data first.")
-            else:
-                cb_cat_dataset = st.selectbox("Dataset", options=catalog_names(), key="cb_cat_dataset")
-                if cb_cat_dataset:
-                    _cat_df = st.session_state.catalog[cb_cat_dataset]
-                    _cat_numeric = get_numeric_columns(_cat_df)
-                    if _cat_numeric:
-                        _cc1, _cc2 = st.columns(2)
-                        with _cc1:
-                            cb_cat_col = st.selectbox("Column", options=_cat_numeric, key="cb_cat_col")
-                        with _cc2:
-                            cb_cat_label = st.text_input(
-                                "Label", key="cb_cat_label", placeholder="Display name (optional)"
-                            )
-
-                        _ctr_col, _croll_col = st.columns([2, 1])
-                        with _ctr_col:
-                            cb_cat_transform = st.selectbox(
-                                "Transform", ["none", "yoy", "mom", "rolling"], key="cb_cat_transform"
-                            )
-                        with _croll_col:
-                            cb_cat_rolling = st.number_input(
-                                "Window",
-                                min_value=2,
-                                max_value=120,
-                                value=12,
-                                key="cb_cat_rolling",
-                                disabled=(cb_cat_transform != "rolling"),
-                            )
-
-                        _ctype_col, _caxis_col = st.columns(2)
-                        with _ctype_col:
-                            cb_cat_type = st.selectbox(
-                                "Chart type", ["line", "bar", "area"], key="cb_cat_type"
-                            )
-                        with _caxis_col:
-                            cb_cat_axis = st.selectbox("Axis", [1, 2], key="cb_cat_axis")
-
-                        if st.button("+ Add to Chart", key="cb_cat_add", use_container_width=True):
-                            _label = (cb_cat_label.strip() or cb_cat_col)
-                            if _label in cb_data:
-                                st.warning(f"A series named '{_label}' already exists.")
-                            else:
-                                _s = _cat_df[cb_cat_col].dropna()
-                                if not isinstance(_s.index, pd.DatetimeIndex):
-                                    try:
-                                        _s.index = pd.to_datetime(_s.index)
-                                    except Exception:
-                                        pass
-                                if cb_cat_transform == "yoy":
-                                    _s = year_over_year(_s)
-                                elif cb_cat_transform == "mom":
-                                    _s = month_over_month(_s)
-                                elif cb_cat_transform == "rolling":
-                                    _s = rolling_mean(_s, int(cb_cat_rolling))
-                                cb_data[_label] = _s
-                                cb_series.append({
-                                    "label": _label,
-                                    "chart_type": cb_cat_type,
-                                    "axis": cb_cat_axis,
-                                    "source": "catalog",
-                                    "series_id": None,
-                                    "catalog_name": cb_cat_dataset,
-                                    "col": cb_cat_col,
-                                    "transform": cb_cat_transform,
-                                    "rolling_window": int(cb_cat_rolling),
-                                })
-                                st.rerun()
-                    else:
-                        st.warning("No numeric columns in selected dataset.")
-
-        with tab_feed:
             from providers import get_provider as _get_feed_prov
             from modules.config.feed_catalog import list_feeds as _list_feeds_cb
             _feed_list = _list_feeds_cb()
@@ -737,9 +663,9 @@ elif page == "Chart Builder":
             else:
                 _fp_sel = feed_picker(
                     key="cb_feed_picker",
-                    label="Select a registered feed",
+                    label="Select a feed",
                     allow_none=True,
-                    help_text="Pick a data feed from the catalog",
+                    help_text="Pick a data feed from the catalog (filter by tag)",
                 )
                 if _fp_sel:
                     _ff_col1, _ff_col2 = st.columns(2)
@@ -772,12 +698,11 @@ elif page == "Chart Builder":
                             disabled=(cb_feed_transform != "rolling"),
                         )
 
-                    if st.button("+ Add Feed Series", key="cb_feed_add", use_container_width=True):
+                    if st.button("+ Add Series", key="cb_feed_add", use_container_width=True):
                         _label = (cb_feed_label.strip() or _fp_sel.get("name", _fp_sel["series_id"]))
                         if _label in cb_data:
                             st.warning(f"A series named '{_label}' already exists.")
                         else:
-                            # Load data from provider
                             try:
                                 _f_prov = _get_feed_prov(_fp_sel["provider"])
                                 _f_kwargs = _fp_sel.get("kwargs", {})
@@ -797,9 +722,6 @@ elif page == "Chart Builder":
                                         "axis": cb_feed_axis,
                                         "source": "feed",
                                         "feed_id": _fp_sel["id"],
-                                        "series_id": None,
-                                        "catalog_name": None,
-                                        "col": None,
                                         "transform": cb_feed_transform,
                                         "rolling_window": int(cb_feed_rolling),
                                     })
@@ -863,9 +785,6 @@ elif page == "Chart Builder":
                             "chart_type": comp_type,
                             "axis": comp_axis,
                             "source": "computed",
-                            "series_id": None,
-                            "catalog_name": None,
-                            "col": None,
                             "transform": "none",
                             "rolling_window": 12,
                             "op": _op,
@@ -902,6 +821,19 @@ elif page == "Chart Builder":
 
             show_legend = st.checkbox("Show legend", value=True, key="cb_show_legend")
 
+            st.markdown("**Default date range**")
+            _range_options = [("Show all", 0), ("1 year", 1), ("2 years", 2), ("3 years", 3), ("5 years", 5), ("10 years", 10), ("20 years", 20)]
+            _range_labels = [r[0] for r in _range_options]
+            _range_values = [r[1] for r in _range_options]
+            _default_range_years = st.select_slider(
+                "Default visible range",
+                options=_range_values,
+                value=0,
+                format_func=lambda v: dict(_range_options).get(v, str(v)),
+                key="cb_default_range",
+                help="Set the default x-axis range shown when the chart loads. The range slider still allows panning.",
+            )
+
             if st.button("Clear All Series", key="cb_clear_all"):
                 st.session_state.cb_series = []
                 st.session_state.cb_data = {}
@@ -928,6 +860,12 @@ elif page == "Chart Builder":
                 apply_style(fig)
                 if y_min is not None or y_max is not None:
                     apply_clip_arrows(fig, y_min, y_max)
+                # Apply default date range if set
+                if _default_range_years and _default_range_years > 0:
+                    from datetime import datetime, timedelta
+                    _range_end = datetime.today()
+                    _range_start = _range_end - timedelta(days=_default_range_years * 365)
+                    fig.update_layout(xaxis=dict(range=[_range_start.strftime("%Y-%m-%d"), _range_end.strftime("%Y-%m-%d")]))
                 st.plotly_chart(fig, use_container_width=True)
 
         # ── Save bar (Chart) — always visible ─────────────────────────────────
@@ -985,14 +923,19 @@ elif page == "Chart Builder":
                         "max": y_max2,
                     },
                     "show_legend": st.session_state.get("cb_show_legend", True),
+                    "default_range_years": _default_range_years if _default_range_years else None,
                     "series": list(cb_series),
                 }
                 if st.session_state.cb_item_id:
                     _item_dict["id"] = st.session_state.cb_item_id
                 _saved_id = upsert_item(_sv_cat_id, _item_dict)
-                st.session_state.cb_item_id = _saved_id
-                st.session_state.cb_catalog_id = _sv_cat_id
                 _cat_title = _sv_cat_sel if _sv_cat_options else _sv_cat_id
+                # Clear form for next chart
+                st.session_state.cb_item_id = None
+                st.session_state.cb_catalog_id = _sv_cat_id
+                st.session_state.cb_series = []
+                st.session_state.cb_data = {}
+                st.session_state["cb_chart_title"] = ""
                 st.toast(f"Saved to {_cat_title}")
                 st.rerun()
 
@@ -1010,13 +953,18 @@ elif page == "Chart Builder":
                         "y_axis": {"min": y_min, "max": y_max},
                         "y_axis2": {"min": y_min2, "max": y_max2},
                         "show_legend": st.session_state.get("cb_show_legend", True),
+                        "default_range_years": _default_range_years if _default_range_years else None,
                         "series": list(cb_series),
                         # no "id" — forces upsert_item to create a new item
                     }
                     _saved_id = upsert_item(_sv_cat_id, _item_dict_new)
-                    st.session_state.cb_item_id = _saved_id
-                    st.session_state.cb_catalog_id = _sv_cat_id
                     _cat_title = _sv_cat_sel if _sv_cat_options else _sv_cat_id
+                    # Clear form for next chart
+                    st.session_state.cb_item_id = None
+                    st.session_state.cb_catalog_id = _sv_cat_id
+                    st.session_state.cb_series = []
+                    st.session_state.cb_data = {}
+                    st.session_state["cb_chart_title"] = ""
                     st.toast(f"Saved as new to {_cat_title}")
                     st.rerun()
 
@@ -1115,179 +1063,161 @@ elif page == "Chart Builder":
     elif _cb_item_type == "Card":
         st.subheader("Card Builder")
 
-        if not st.session_state.catalog:
-            st.info("No datasets loaded yet. Go to **Data Sources** to load data first.")
-        else:
-            # ── Data source ───────────────────────────────────────────────────
-            _cd_col1, _cd_col2 = st.columns(2)
-            with _cd_col1:
-                # Determine initial dataset index (for when loading from catalog)
-                _card_ds_options = catalog_names()
-                _card_ds_init = (
-                    _card_ds_options.index(st.session_state.cb_card_dataset)
-                    if st.session_state.cb_card_dataset in _card_ds_options
-                    else 0
-                )
-                _card_dataset = st.selectbox(
-                    "Dataset",
-                    options=_card_ds_options,
-                    index=_card_ds_init,
-                    key="cb_card_dataset_sel",
-                )
-                st.session_state.cb_card_dataset = _card_dataset
-            with _cd_col2:
-                _card_df = st.session_state.catalog.get(_card_dataset, pd.DataFrame())
-                _card_numeric = get_numeric_columns(_card_df)
-                if _card_numeric:
-                    _card_col_init = (
-                        _card_numeric.index(st.session_state.cb_card_column)
-                        if st.session_state.cb_card_column in _card_numeric
-                        else 0
-                    )
-                    _card_column = st.selectbox(
-                        "Column",
-                        options=_card_numeric,
-                        index=_card_col_init,
-                        key="cb_card_column_sel",
-                    )
-                    st.session_state.cb_card_column = _card_column
-                else:
-                    st.warning("No numeric columns in this dataset.")
-                    _card_column = ""
+        from providers import get_provider as _card_get_prov
 
-            # ── Card settings ─────────────────────────────────────────────────
-            _cds_col1, _cds_col2, _cds_col3 = st.columns(3)
-            with _cds_col1:
-                _card_title = st.text_input(
-                    "Card title",
-                    value=st.session_state.cb_card_title or (_card_column if _card_column else ""),
-                    placeholder="e.g. Unemployment Rate",
-                    key="cb_card_title_input",
-                )
-                st.session_state.cb_card_title = _card_title
-            with _cds_col2:
-                _card_fmt = st.text_input(
-                    "Value format",
-                    value=st.session_state.cb_card_value_format,
-                    placeholder=",.2f",
-                    key="cb_card_fmt_input",
-                    help="Python format spec, e.g. ',.2f', '.1f', ',.0f'",
-                )
-                st.session_state.cb_card_value_format = _card_fmt
-            with _cds_col3:
-                _card_sfx = st.text_input(
-                    "Suffix",
-                    value=st.session_state.cb_card_value_suffix,
-                    placeholder="e.g. %  or  K",
-                    key="cb_card_sfx_input",
-                )
-                st.session_state.cb_card_value_suffix = _card_sfx
+        # ── Data source (feed picker) ────────────────────────────────────────
+        _card_feed = feed_picker(
+            key="cb_card_feed_picker",
+            label="Select a feed for the card",
+            allow_none=True,
+            help_text="Pick a data feed from the catalog (filter by tag)",
+            default_feed_id=st.session_state.cb_card_feed_id,
+        )
+        if _card_feed:
+            st.session_state.cb_card_feed_id = _card_feed["id"]
+        _card_feed_id = st.session_state.cb_card_feed_id
 
-            _delta_options = ["none", "period", "yoy"]
-            _delta_labels = {"none": "No change", "period": "Prior period change", "yoy": "Year-over-year %"}
-            _delta_init = (
-                _delta_options.index(st.session_state.cb_card_delta_type)
-                if st.session_state.cb_card_delta_type in _delta_options
-                else 0
+        # ── Card settings ─────────────────────────────────────────────────
+        _card_feed_name = _card_feed.get("name", "") if _card_feed else ""
+        _cds_col1, _cds_col2, _cds_col3 = st.columns(3)
+        with _cds_col1:
+            _card_title = st.text_input(
+                "Card title",
+                value=st.session_state.cb_card_title or _card_feed_name,
+                placeholder="e.g. Unemployment Rate",
+                key="cb_card_title_input",
             )
-            _card_delta = st.selectbox(
-                "Show change",
-                options=_delta_options,
-                index=_delta_init,
-                format_func=lambda x: _delta_labels[x],
-                key="cb_card_delta_sel",
+            st.session_state.cb_card_title = _card_title
+        with _cds_col2:
+            _card_fmt = st.text_input(
+                "Value format",
+                value=st.session_state.cb_card_value_format,
+                placeholder=",.2f",
+                key="cb_card_fmt_input",
+                help="Python format spec, e.g. ',.2f', '.1f', ',.0f'",
             )
-            st.session_state.cb_card_delta_type = _card_delta
+            st.session_state.cb_card_value_format = _card_fmt
+        with _cds_col3:
+            _card_sfx = st.text_input(
+                "Suffix",
+                value=st.session_state.cb_card_value_suffix,
+                placeholder="e.g. %  or  K",
+                key="cb_card_sfx_input",
+            )
+            st.session_state.cb_card_value_suffix = _card_sfx
 
-            # ── Live preview ──────────────────────────────────────────────────
-            if _card_column:
-                _prev_s = _card_df[_card_column].dropna()
-                if not isinstance(_prev_s.index, pd.DatetimeIndex):
-                    try:
-                        _prev_s.index = pd.to_datetime(_prev_s.index)
-                    except Exception:
-                        pass
-                if not _prev_s.empty:
-                    st.markdown("---")
-                    st.markdown("**Live Preview**")
-                    _prev_val = _prev_s.iloc[-1]
-                    _prev_delta_str = None
-                    if _card_delta == "period" and len(_prev_s) >= 2:
-                        _chg = _prev_s.iloc[-1] - _prev_s.iloc[-2]
-                        _prev_delta_str = f"{_chg:+.4g} vs prior period"
-                    elif _card_delta == "yoy" and len(_prev_s) >= 13:
-                        try:
-                            _yoy_val = (_prev_s.iloc[-1] / _prev_s.iloc[-13] - 1) * 100
-                            _prev_delta_str = f"{_yoy_val:+.2f}% YoY"
-                        except Exception:
-                            pass
-                    _fmt_spec = _card_fmt or ",.2f"
-                    try:
-                        _prev_val_str = f"{format(_prev_val, _fmt_spec)}{_card_sfx}"
-                    except Exception:
-                        _prev_val_str = f"{_prev_val}{_card_sfx}"
-                    st.metric(_card_title or _card_column, _prev_val_str, _prev_delta_str)
+        _delta_options = ["none", "period", "yoy"]
+        _delta_labels = {"none": "No change", "period": "Prior period change", "yoy": "Year-over-year %"}
+        _delta_init = (
+            _delta_options.index(st.session_state.cb_card_delta_type)
+            if st.session_state.cb_card_delta_type in _delta_options
+            else 0
+        )
+        _card_delta = st.selectbox(
+            "Show change",
+            options=_delta_options,
+            index=_delta_init,
+            format_func=lambda x: _delta_labels[x],
+            key="cb_card_delta_sel",
+        )
+        st.session_state.cb_card_delta_type = _card_delta
 
-            # ── Save bar (Card) ───────────────────────────────────────────────
+        # ── Live preview ──────────────────────────────────────────────────
+        _prev_s = None
+        if _card_feed:
+            try:
+                _cprov = _card_get_prov(_card_feed["provider"])
+                _cdf = _cprov.fetch_series(_card_feed["series_id"], **_card_feed.get("kwargs", {}))
+                if _cdf is not None and not _cdf.empty:
+                    _prev_s = _cdf.iloc[:, 0].dropna()
+            except Exception:
+                pass
+
+        if _prev_s is not None and not _prev_s.empty:
             st.markdown("---")
-            st.markdown("**Save to Catalog**")
-            _sv_catalogs_c = list_catalogs()
-            _svc_col1, _svc_col2 = st.columns([3, 2])
-            with _svc_col1:
-                _svc_options = {c["title"]: c["id"] for c in _sv_catalogs_c}
-                if _svc_options:
-                    _svc_sel = st.selectbox(
-                        "Catalog",
-                        options=list(_svc_options.keys()),
-                        key="cb_save_catalog_card_sel",
-                    )
-                    _svc_id = _svc_options.get(_svc_sel, "")
-                else:
-                    _svc_id = ""
-                    st.caption("No catalogs yet.")
-                with st.expander("Create new catalog"):
-                    _new_cat_title_c = st.text_input("New catalog name", key="cb_new_cat_title_c")
-                    _new_cat_desc_c = st.text_input("Description (optional)", key="cb_new_cat_desc_c")
-                    if st.button("Create Catalog", key="cb_create_cat_btn_c"):
-                        if _new_cat_title_c.strip():
-                            _created_c = create_catalog(_new_cat_title_c.strip(), _new_cat_desc_c.strip())
-                            st.success(f"Created catalog: {_created_c['title']}")
-                            st.rerun()
-                        else:
-                            st.warning("Enter a catalog name.")
+            st.markdown("**Live Preview**")
+            _prev_val = _prev_s.iloc[-1]
+            _prev_delta_str = None
+            if _card_delta == "period" and len(_prev_s) >= 2:
+                _chg = _prev_s.iloc[-1] - _prev_s.iloc[-2]
+                _prev_delta_str = f"{_chg:+.4g} vs prior period"
+            elif _card_delta == "yoy" and len(_prev_s) >= 13:
+                try:
+                    _yoy_val = (_prev_s.iloc[-1] / _prev_s.iloc[-13] - 1) * 100
+                    _prev_delta_str = f"{_yoy_val:+.2f}% YoY"
+                except Exception:
+                    pass
+            _fmt_spec = _card_fmt or ",.2f"
+            try:
+                _prev_val_str = f"{format(_prev_val, _fmt_spec)}{_card_sfx}"
+            except Exception:
+                _prev_val_str = f"{_prev_val}{_card_sfx}"
+            st.metric(_card_title or _card_feed_name or "Card", _prev_val_str, _prev_delta_str)
 
-            with _svc_col2:
-                _svc_item_title = st.text_input(
-                    "Item title",
-                    value=_card_title or _card_column or "",
-                    key="cb_save_card_item_title",
+        # ── Save bar (Card) ───────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Save to Catalog**")
+        _sv_catalogs_c = list_catalogs()
+        _svc_col1, _svc_col2 = st.columns([3, 2])
+        with _svc_col1:
+            _svc_options = {c["title"]: c["id"] for c in _sv_catalogs_c}
+            if _svc_options:
+                _svc_sel = st.selectbox(
+                    "Catalog",
+                    options=list(_svc_options.keys()),
+                    key="cb_save_catalog_card_sel",
                 )
-                _svc_can_save = bool(_svc_id and _card_column)
-                if st.button(
-                    "Save to Catalog",
-                    key="cb_save_card_btn",
-                    type="primary",
-                    disabled=not _svc_can_save,
-                    help="Select a dataset column and catalog first" if not _svc_can_save else "",
-                ):
-                    _card_item = {
-                        "type": "card",
-                        "title": _svc_item_title.strip() or _card_title or _card_column,
-                        "dataset_name": _card_dataset,
-                        "column": _card_column,
-                        "fred_series_id": st.session_state.cb_card_fred_id or "",
-                        "value_format": _card_fmt or ",.2f",
-                        "value_suffix": _card_sfx,
-                        "delta_type": _card_delta,
-                    }
-                    if st.session_state.cb_item_id:
-                        _card_item["id"] = st.session_state.cb_item_id
-                    _saved_card_id = upsert_item(_svc_id, _card_item)
-                    st.session_state.cb_item_id = _saved_card_id
-                    st.session_state.cb_catalog_id = _svc_id
-                    _cat_title_c = _svc_sel if _svc_options else _svc_id
-                    st.toast(f"Saved to {_cat_title_c}")
-                    st.rerun()
+                _svc_id = _svc_options.get(_svc_sel, "")
+            else:
+                _svc_id = ""
+                st.caption("No catalogs yet.")
+            with st.expander("Create new catalog"):
+                _new_cat_title_c = st.text_input("New catalog name", key="cb_new_cat_title_c")
+                _new_cat_desc_c = st.text_input("Description (optional)", key="cb_new_cat_desc_c")
+                if st.button("Create Catalog", key="cb_create_cat_btn_c"):
+                    if _new_cat_title_c.strip():
+                        _created_c = create_catalog(_new_cat_title_c.strip(), _new_cat_desc_c.strip())
+                        st.success(f"Created catalog: {_created_c['title']}")
+                        st.rerun()
+                    else:
+                        st.warning("Enter a catalog name.")
+
+        with _svc_col2:
+            _svc_item_title = st.text_input(
+                "Item title",
+                value=_card_title or _card_feed_name or "",
+                key="cb_save_card_item_title",
+            )
+            _svc_can_save = bool(_svc_id and _card_feed_id)
+            if st.button(
+                "Save to Catalog",
+                key="cb_save_card_btn",
+                type="primary",
+                disabled=not _svc_can_save,
+                help="Select a feed and catalog first" if not _svc_can_save else "",
+            ):
+                _card_item = {
+                    "type": "card",
+                    "title": _svc_item_title.strip() or _card_title or _card_feed_name,
+                    "feed_id": _card_feed_id,
+                    "value_format": _card_fmt or ",.2f",
+                    "value_suffix": _card_sfx,
+                    "delta_type": _card_delta,
+                }
+                if st.session_state.cb_item_id:
+                    _card_item["id"] = st.session_state.cb_item_id
+                _saved_card_id = upsert_item(_svc_id, _card_item)
+                _cat_title_c = _svc_sel if _svc_options else _svc_id
+                # Clear form for next card
+                st.session_state.cb_item_id = None
+                st.session_state.cb_catalog_id = _svc_id
+                st.session_state.cb_card_feed_id = None
+                st.session_state.cb_card_title = ""
+                st.session_state.cb_card_value_format = ",.2f"
+                st.session_state.cb_card_value_suffix = ""
+                st.session_state.cb_card_delta_type = "none"
+                st.toast(f"Saved to {_cat_title_c}")
+                st.rerun()
 
 
 # =============================================================================

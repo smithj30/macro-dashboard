@@ -135,17 +135,20 @@ def _render_fred_tab():
             "Copy `.env.example` to `.env` and add your key."
         )
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        search_query = st.text_input(
-            "Search FRED",
-            placeholder="e.g. unemployment rate, CPI, GDP...",
-            key="fred_search_query",
-        )
-    with col2:
-        search_limit = st.number_input("Results", min_value=5, max_value=100, value=20, step=5)
+    with st.form("fred_search_form"):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search_query = st.text_input(
+                "Search FRED",
+                placeholder="e.g. unemployment rate, CPI, GDP...",
+                key="fred_search_query",
+            )
+        with col2:
+            search_limit = st.number_input("Results", min_value=5, max_value=100, value=20, step=5)
 
-    if st.button("Search", key="fred_search_btn", use_container_width=True):
+        submitted = st.form_submit_button("Search", use_container_width=True)
+
+    if submitted:
         if not search_query:
             st.warning("Enter a search term.")
         else:
@@ -241,10 +244,7 @@ def _render_fred_tab():
                         pass
                     st.session_state.de_source_meta = meta
 
-                    st.success(f"Loaded **{name}** -- {len(df):,} observations.")
-                    if meta.get("title"):
-                        st.caption(f"{meta.get('title', '')} | {meta.get('units', '')} | {meta.get('frequency', '')}")
-                    st.line_chart(df)
+                    st.success(f"Loaded **{name}** — select it in the Preview section below.")
                 except Exception as e:
                     st.error(f"Failed to load series: {e}")
 
@@ -680,71 +680,72 @@ def _render_preview_section():
 # ---------------------------------------------------------------------------
 
 def _render_save_as_feed(dataset_name: str, df: pd.DataFrame):
-    """Expandable form to save the current preview dataset as a persistent feed."""
-    with st.expander("Save as Feed", expanded=False):
-        meta = st.session_state.get("de_source_meta", {})
+    """Inline form to save the current preview dataset as a persistent feed."""
+    st.markdown("---")
+    st.subheader("Save as Feed")
+    meta = st.session_state.get("de_source_meta", {})
 
-        # Pre-fill from source metadata
-        feed_name = st.text_input(
-            "Feed name",
-            value=meta.get("dataset_name", dataset_name),
-            key="de_saf_name",
+    # Pre-fill from source metadata
+    feed_name = st.text_input(
+        "Feed name",
+        value=meta.get("dataset_name", dataset_name),
+        key="de_saf_name",
+    )
+    provider = st.text_input(
+        "Provider",
+        value=meta.get("provider", ""),
+        key="de_saf_provider",
+    )
+    sid = st.text_input(
+        "Series ID",
+        value=meta.get("series_id", ""),
+        key="de_saf_series_id",
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        frequency = st.text_input(
+            "Frequency",
+            value=meta.get("frequency", ""),
+            key="de_saf_freq",
         )
-        provider = st.text_input(
-            "Provider",
-            value=meta.get("provider", ""),
-            key="de_saf_provider",
-        )
-        sid = st.text_input(
-            "Series ID",
-            value=meta.get("series_id", ""),
-            key="de_saf_series_id",
+    with col2:
+        units = st.text_input(
+            "Units",
+            value=meta.get("units", ""),
+            key="de_saf_units",
         )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            frequency = st.text_input(
-                "Frequency",
-                value=meta.get("frequency", ""),
-                key="de_saf_freq",
-            )
-        with col2:
-            units = st.text_input(
-                "Units",
-                value=meta.get("units", ""),
-                key="de_saf_units",
-            )
+    tags_str = st.text_input("Tags (comma-separated)", key="de_saf_tags")
 
-        tags_str = st.text_input("Tags (comma-separated)", key="de_saf_tags")
-
-        if st.button("Save Feed", key="de_saf_save_btn", type="primary", use_container_width=True):
-            if not feed_name.strip() or not provider.strip():
-                st.warning("Feed name and provider are required.")
+    if st.button("Save as Feed", key="de_saf_save_btn", type="primary", use_container_width=True):
+        if not feed_name.strip() or not provider.strip():
+            st.warning("Feed name and provider are required.")
+        else:
+            # Duplicate check
+            existing = find_feed(provider.strip(), sid.strip())
+            if existing:
+                st.warning(
+                    f"A feed with provider=`{provider}` and series_id=`{sid}` "
+                    f"already exists: **{existing['name']}** (`{existing['id']}`)"
+                )
             else:
-                # Duplicate check
-                existing = find_feed(provider.strip(), sid.strip())
-                if existing:
-                    st.warning(
-                        f"A feed with provider=`{provider}` and series_id=`{sid}` "
-                        f"already exists: **{existing['name']}** (`{existing['id']}`)"
-                    )
-                else:
-                    tags = [t.strip() for t in tags_str.split(",") if t.strip()]
-                    params = {"series_id": sid.strip()}
-                    # For computed feeds, pass through operation params
-                    if provider.strip() == "computed" and meta.get("operand_a"):
-                        params = {
-                            "operand_a": meta["operand_a"],
-                            "operand_b": meta["operand_b"],
-                            "operation": meta["operation"],
-                        }
-                    new_feed = create_feed(
-                        name=feed_name.strip(),
-                        provider=provider.strip(),
-                        series_id=sid.strip(),
-                        frequency=frequency.strip(),
-                        units=units.strip(),
-                        tags=tags,
-                        params=params,
-                    )
-                    st.success(f"Saved feed: **{feed_name.strip()}** (`{new_feed['id']}`)")
+                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+                params = {"series_id": sid.strip()}
+                # For computed feeds, pass through operation params
+                if provider.strip() == "computed" and meta.get("operand_a"):
+                    params = {
+                        "operand_a": meta["operand_a"],
+                        "operand_b": meta["operand_b"],
+                        "operation": meta["operation"],
+                    }
+                new_feed = create_feed(
+                    name=feed_name.strip(),
+                    provider=provider.strip(),
+                    series_id=sid.strip(),
+                    frequency=frequency.strip(),
+                    units=units.strip(),
+                    tags=tags,
+                    params=params,
+                )
+                st.success(f"Saved feed: **{feed_name.strip()}** (`{new_feed['id']}`)")

@@ -673,6 +673,16 @@ def _step_preview() -> None:
     with st.expander("View raw config JSON"):
         st.json(draft)
 
+    # Live dashboard preview
+    if sections:
+        st.markdown("---")
+        st.markdown("**Live Preview**")
+        try:
+            from views.dynamic_dashboard import render as _render_preview
+            _render_preview(draft, preview=True)
+        except Exception as exc:
+            st.warning(f"Preview could not be rendered: {exc}")
+
     col_back, col_save = st.columns([1, 3])
     with col_back:
         if st.button("Back", key="s3_back", use_container_width=True):

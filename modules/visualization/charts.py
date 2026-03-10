@@ -159,6 +159,15 @@ def time_series_chart(
         is_secondary = has_dual and col == dual_axis_col
         color = _get_color(i)
 
+        # Clip out-of-range values to None so the line breaks (empty space)
+        _lo = y_min2 if is_secondary else y_min
+        _hi = y_max2 if is_secondary else y_max
+        if _lo is not None or _hi is not None:
+            series = series.where(
+                (series >= _lo if _lo is not None else True)
+                & (series <= _hi if _hi is not None else True)
+            )
+
         stype = (series_types or {}).get(col, chart_type)
 
         if stype == "bar":

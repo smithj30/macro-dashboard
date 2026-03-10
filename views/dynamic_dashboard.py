@@ -22,7 +22,7 @@ from modules.data_processing.transforms import (
     rolling_mean,
     year_over_year,
 )
-from modules.visualization.charts import apply_clip_arrows, time_series_chart
+from modules.visualization.charts import time_series_chart
 from modules.visualization.news_widget import render_news_section
 from components.chart_renderer import apply_style
 
@@ -125,9 +125,42 @@ def _yoy_pct(series: pd.Series) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 
+def _compute_data_range(
+    merged: Optional[pd.DataFrame],
+    dual_axis_col: Optional[str] = None,
+) -> Dict[str, Dict[str, float]]:
+    """Compute actual min/max from data for pre-populating Y-axis inputs.
+
+    Returns {"primary": {"min": ..., "max": ...}, "secondary": {"min": ..., "max": ...}}.
+    """
+    result: Dict[str, Dict[str, float]] = {
+        "primary": {"min": 0.0, "max": 100.0},
+        "secondary": {"min": 0.0, "max": 100.0},
+    }
+    if merged is None or merged.empty:
+        return result
+
+    if dual_axis_col and dual_axis_col in merged.columns:
+        primary_cols = [c for c in merged.columns if c != dual_axis_col]
+        sec_data = merged[dual_axis_col].dropna()
+        if not sec_data.empty:
+            result["secondary"] = {"min": float(sec_data.min()), "max": float(sec_data.max())}
+    else:
+        primary_cols = list(merged.columns)
+
+    if primary_cols:
+        pri_data = merged[primary_cols].dropna(how="all")
+        if not pri_data.empty:
+            result["primary"] = {"min": float(pri_data.min().min()), "max": float(pri_data.max().max())}
+
+    return result
+
+
 def _section_controls_dynamic(
     sec: Dict[str, Any],
     config: Dict[str, Any],
+    data_range: Optional[Dict[str, Dict[str, float]]] = None,
+    has_dual_axis: Optional[bool] = None,
 ) -> None:
     """Settings expander for a dynamic section; saves updated config on submit."""
     section_id = sec.get("id", "")
@@ -138,7 +171,14 @@ def _section_controls_dynamic(
 
     y_axis = sec.get("y_axis") or {}
     y_axis2 = sec.get("y_axis2") or {}
-    has_secondary = any(s.get("axis") == 2 for s in sec.get("series", []))
+    has_secondary = has_dual_axis if has_dual_axis is not None else any(s.get("axis") == 2 for s in sec.get("series", []))
+
+    # Default values from data range when no saved value exists
+    dr = data_range or {"primary": {"min": 0.0, "max": 100.0}, "secondary": {"min": 0.0, "max": 100.0}}
+    default_ymin = dr["primary"]["min"]
+    default_ymax = dr["primary"]["max"]
+    default_ymin2 = dr["secondary"]["min"]
+    default_ymax2 = dr["secondary"]["max"]
 
     with st.expander("⚙ Chart Settings", expanded=False):
         new_chart_type = st.selectbox(
@@ -148,6 +188,7 @@ def _section_controls_dynamic(
             key=f"dyn_ct_{section_id}",
         )
 
+        st.caption(f"Data range: {default_ymin:,.2f} – {default_ymax:,.2f}")
         col_a, col_b = st.columns(2)
         with col_a:
             en_ymin = st.checkbox(
@@ -157,7 +198,7 @@ def _section_controls_dynamic(
             )
             y_min_val = st.number_input(
                 "Y min",
-                value=float(y_axis["min"]) if y_axis.get("min") is not None else 0.0,
+                value=float(y_axis["min"]) if y_axis.get("min") is not None else default_ymin,
                 key=f"dyn_ymin_{section_id}",
                 disabled=not en_ymin,
             )
@@ -169,12 +210,13 @@ def _section_controls_dynamic(
             )
             y_max_val = st.number_input(
                 "Y max",
-                value=float(y_axis["max"]) if y_axis.get("max") is not None else 100.0,
+                value=float(y_axis["max"]) if y_axis.get("max") is not None else default_ymax,
                 key=f"dyn_ymax_{section_id}",
                 disabled=not en_ymax,
             )
 
         if has_secondary:
+            st.caption(f"Secondary axis range: {default_ymin2:,.2f} – {default_ymax2:,.2f}")
             col_c, col_d = st.columns(2)
             with col_c:
                 en_ymin2 = st.checkbox(
@@ -184,7 +226,7 @@ def _section_controls_dynamic(
                 )
                 y_min2_val = st.number_input(
                     "Y2 min",
-                    value=float(y_axis2["min"]) if y_axis2.get("min") is not None else 0.0,
+                    value=float(y_axis2["min"]) if y_axis2.get("min") is not None else default_ymin2,
                     key=f"dyn_ymin2_{section_id}",
                     disabled=not en_ymin2,
                 )
@@ -196,7 +238,7 @@ def _section_controls_dynamic(
                 )
                 y_max2_val = st.number_input(
                     "Y2 max",
-                    value=float(y_axis2["max"]) if y_axis2.get("max") is not None else 100.0,
+                    value=float(y_axis2["max"]) if y_axis2.get("max") is not None else default_ymax2,
                     key=f"dyn_ymax2_{section_id}",
                     disabled=not en_ymax2,
                 )
@@ -286,7 +328,7 @@ def _render_chart_section(
 
     fig = time_series_chart(
         merged,
-        title=sec.get("title", ""),
+        title="",
         dual_axis_col=dual_axis_col,
         chart_type=chart_type,
         y_min=y_min,
@@ -295,22 +337,10 @@ def _render_chart_section(
         y_max2=y_max2,
     )
 
-    if y_min is not None or y_max is not None:
-        primary_indices = [
-            i for i, t in enumerate(fig.data)
-            if hasattr(t, "name") and t.name != dual_axis_col
-        ]
-        apply_clip_arrows(fig, y_min, y_max, trace_indices=primary_indices)
-
-    if dual_axis_col and (y_min2 is not None or y_max2 is not None):
-        secondary_indices = [
-            i for i, t in enumerate(fig.data)
-            if hasattr(t, "name") and t.name == dual_axis_col
-        ]
-        apply_clip_arrows(fig, y_min2, y_max2, trace_indices=secondary_indices)
-
-    _section_controls_dynamic(sec, config)
+    data_range = _compute_data_range(merged, dual_axis_col)
+    _section_controls_dynamic(sec, config, data_range=data_range)
     apply_style(fig)
+    fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -479,17 +509,16 @@ def _render_catalog_chart_section(
     for f in frames[1:]:
         merged = merged.join(f, how="outer")
 
-    y_axis = item.get("y_axis") or {}
-    y_axis2 = item.get("y_axis2") or {}
+    # Section-level overrides take priority over catalog item defaults
+    y_axis = sec.get("y_axis") or item.get("y_axis") or {}
+    y_axis2 = sec.get("y_axis2") or item.get("y_axis2") or {}
     y_min = y_axis.get("min")
     y_max = y_axis.get("max")
     y_min2 = y_axis2.get("min")
     y_max2 = y_axis2.get("max")
 
-    # Use per-series chart_type from first series as the chart type
-    chart_type = "line"
-    if series_defs:
-        chart_type = series_defs[0].get("chart_type", "line")
+    # Section-level chart_type override, then per-series from catalog item
+    chart_type = sec.get("chart_type") or ("line" if not series_defs else series_defs[0].get("chart_type", "line"))
 
     # Build per-series types map
     series_types = {
@@ -499,7 +528,7 @@ def _render_catalog_chart_section(
 
     fig = time_series_chart(
         merged,
-        title=title,
+        title="",
         dual_axis_col=dual_axis_col,
         chart_type=chart_type,
         series_types=series_types,
@@ -510,21 +539,17 @@ def _render_catalog_chart_section(
         show_legend=item.get("show_legend", True),
     )
 
-    if y_min is not None or y_max is not None:
-        primary_indices = [
-            i for i, t in enumerate(fig.data)
-            if hasattr(t, "name") and t.name != dual_axis_col
-        ]
-        apply_clip_arrows(fig, y_min, y_max, trace_indices=primary_indices)
+    # Apply saved default date range
+    _default_range = item.get("default_range_years")
+    if _default_range and int(_default_range) > 0:
+        _range_end = datetime.today()
+        _range_start = _range_end - timedelta(days=int(_default_range) * 365)
+        fig.update_layout(xaxis=dict(range=[_range_start.strftime("%Y-%m-%d"), _range_end.strftime("%Y-%m-%d")]))
 
-    if dual_axis_col and (y_min2 is not None or y_max2 is not None):
-        secondary_indices = [
-            i for i, t in enumerate(fig.data)
-            if hasattr(t, "name") and t.name == dual_axis_col
-        ]
-        apply_clip_arrows(fig, y_min2, y_max2, trace_indices=secondary_indices)
-
+    data_range = _compute_data_range(merged, dual_axis_col)
+    _section_controls_dynamic(sec, config, data_range=data_range, has_dual_axis=dual_axis_col is not None)
     apply_style(fig)
+    fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -554,20 +579,37 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
         pfx = item.get("value_prefix", "")  # backward compat
 
         # ── Resolve data series ──────────────────────────────────────────────
-        # New format: dataset_name + column from session catalog
         series: Optional[pd.Series] = None
-        dataset_name = item.get("dataset_name", "")
-        column = item.get("column", "")
-        if dataset_name and column:
-            session_cat = st.session_state.get("catalog", {})
-            df_cat = session_cat.get(dataset_name)
-            if df_cat is not None and column in df_cat.columns:
-                series = df_cat[column].dropna()
-                if not isinstance(series.index, pd.DatetimeIndex):
-                    try:
-                        series.index = pd.to_datetime(series.index)
-                    except Exception:
-                        pass
+
+        # Primary path: feed_id (new format)
+        _card_feed_id = item.get("feed_id", "")
+        if _card_feed_id:
+            try:
+                from modules.config.feed_catalog import get_feed as _card_get_feed
+                from providers import get_provider as _card_get_prov
+                _card_feed = _card_get_feed(_card_feed_id)
+                if _card_feed:
+                    _cprov = _card_get_prov(_card_feed["provider"])
+                    _cdf = _cprov.fetch_series(_card_feed["series_id"], **_card_feed.get("kwargs", {}))
+                    if _cdf is not None and not _cdf.empty:
+                        series = _cdf.iloc[:, 0].dropna()
+            except Exception:
+                pass
+
+        # Fallback: dataset_name + column from session catalog (legacy)
+        if series is None or series.empty:
+            dataset_name = item.get("dataset_name", "")
+            column = item.get("column", "")
+            if dataset_name and column:
+                session_cat = st.session_state.get("catalog", {})
+                df_cat = session_cat.get(dataset_name)
+                if df_cat is not None and column in df_cat.columns:
+                    series = df_cat[column].dropna()
+                    if not isinstance(series.index, pd.DatetimeIndex):
+                        try:
+                            series.index = pd.to_datetime(series.index)
+                        except Exception:
+                            pass
 
         # Fallback: FRED series_id (old format or explicit fred_series_id)
         if series is None or series.empty:
@@ -655,32 +697,45 @@ def _group_into_rows(sections: List[Dict[str, Any]]) -> List[List[Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-def render(config: Dict[str, Any]) -> None:
-    """Render a fully config-driven dashboard."""
+def render(config: Dict[str, Any], preview: bool = False) -> None:
+    """Render a fully config-driven dashboard.
+
+    Parameters
+    ----------
+    config  : dashboard JSON config dict
+    preview : if True, skip the toolbar (used by Dashboard Builder preview)
+    """
     title = config.get("title", "Dashboard")
     description = config.get("description", "")
     news_query = config.get("news_query", "")
 
-    st.title(title)
-    if description:
-        st.caption(description)
-
-    # Dashboard toolbar
-    _tb_edit, _tb_refresh, _tb_spacer = st.columns([1, 1, 8])
-    with _tb_edit:
-        if st.button("✏ Edit", key=f"dyn_edit_{config.get('id', '')}", help="Edit in Dashboard Builder"):
-            st.session_state.builder_draft = config
-            st.session_state.builder_edit_id = config.get("id")
-            st.session_state.builder_step = 2
-            st.session_state["b_pending_series"] = []
-            st.session_state.page = "Dashboard Builder"
-            st.rerun()
-    with _tb_refresh:
-        if st.button("↺ Refresh", key=f"dyn_refresh_{config.get('id', '')}", help="Reload all data"):
-            _load_series_fred.clear()
-            _load_card_fred.clear()
-            _load_series_feed.clear()
-            st.rerun()
+    if preview:
+        st.subheader(title)
+        if description:
+            st.caption(description)
+    else:
+        # Title row with toolbar buttons on the right
+        _tb_title, _tb_edit, _tb_refresh = st.columns([8, 1, 1])
+        with _tb_title:
+            st.title(title)
+            if description:
+                st.caption(description)
+        with _tb_edit:
+            st.markdown("<div style='padding-top:0.6rem'></div>", unsafe_allow_html=True)
+            if st.button("Edit", key=f"dyn_edit_{config.get('id', '')}", help="Edit in Dashboard Builder"):
+                st.session_state.builder_draft = config
+                st.session_state.builder_edit_id = config.get("id")
+                st.session_state.builder_step = 2
+                st.session_state["b_pending_series"] = []
+                st.session_state.page = "Dashboard Builder"
+                st.rerun()
+        with _tb_refresh:
+            st.markdown("<div style='padding-top:0.6rem'></div>", unsafe_allow_html=True)
+            if st.button("Refresh", key=f"dyn_refresh_{config.get('id', '')}", help="Reload all data"):
+                _load_series_fred.clear()
+                _load_card_fred.clear()
+                _load_series_feed.clear()
+                st.rerun()
 
     sections = config.get("sections", [])
     if not sections:

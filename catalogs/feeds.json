@@ -32,5 +32,149 @@
     "updated_at": "2026-03-03T11:04:36.246457",
     "last_refreshed": null,
     "kwargs": {}
+  },
+  {
+    "id": "feed_60201f02",
+    "name": "Real GDP QOQ%",
+    "provider": "bea",
+    "series_id": "T10101",
+    "description": "",
+    "source": "",
+    "release": "",
+    "frequency": "Quarterly",
+    "units": "",
+    "dimensions": {},
+    "params": {
+      "series_id": "T10101"
+    },
+    "tags": [
+      "GDP"
+    ],
+    "refresh_schedule": "daily",
+    "provider_metadata": {},
+    "created_at": "2026-03-08T14:40:14.250036",
+    "updated_at": "2026-03-08T14:40:14.250036",
+    "last_refreshed": null,
+    "kwargs": {}
+  },
+  {
+    "id": "feed_28805c4a",
+    "name": "All Employees, Total Nonfarm",
+    "provider": "fred",
+    "series_id": "PAYEMS",
+    "description": "",
+    "source": "",
+    "release": "",
+    "frequency": "Monthly",
+    "units": "Thousands of Persons",
+    "dimensions": {},
+    "params": {
+      "series_id": "PAYEMS"
+    },
+    "tags": [
+      "Labor"
+    ],
+    "refresh_schedule": "daily",
+    "provider_metadata": {},
+    "created_at": "2026-03-09T21:03:41.805936",
+    "updated_at": "2026-03-09T21:12:24.744786",
+    "last_refreshed": null,
+    "kwargs": {}
+  },
+  {
+    "id": "feed_6687fe55",
+    "name": "Initial Claims",
+    "provider": "fred",
+    "series_id": "ICSA",
+    "description": "",
+    "source": "",
+    "release": "",
+    "frequency": "Weekly, Ending Saturday",
+    "units": "Number",
+    "dimensions": {},
+    "params": {
+      "series_id": "ICSA"
+    },
+    "tags": [
+      "Labor"
+    ],
+    "refresh_schedule": "daily",
+    "provider_metadata": {},
+    "created_at": "2026-03-09T21:04:52.587063",
+    "updated_at": "2026-03-09T21:12:17.074803",
+    "last_refreshed": null,
+    "kwargs": {}
+  },
+  {
+    "id": "feed_acc0d1eb",
+    "name": "Continued Claims (Insured Unemployment)",
+    "provider": "fred",
+    "series_id": "CCSA",
+    "description": "",
+    "source": "",
+    "release": "",
+    "frequency": "Weekly, Ending Saturday",
+    "units": "Number",
+    "dimensions": {},
+    "params": {
+      "series_id": "CCSA"
+    },
+    "tags": [
+      "Labor"
+    ],
+    "refresh_schedule": "daily",
+    "provider_metadata": {},
+    "created_at": "2026-03-09T21:12:40.721272",
+    "updated_at": "2026-03-09T21:12:40.721272",
+    "last_refreshed": null,
+    "kwargs": {}
+  },
+  {
+    "id": "feed_2d27bafa",
+    "name": "Job Openings: Total Nonfarm",
+    "provider": "fred",
+    "series_id": "JTSJOL",
+    "description": "",
+    "source": "",
+    "release": "",
+    "frequency": "Monthly",
+    "units": "Level in Thousands",
+    "dimensions": {},
+    "params": {
+      "series_id": "JTSJOL"
+    },
+    "tags": [
+      "Labor"
+    ],
+    "refresh_schedule": "daily",
+    "provider_metadata": {},
+    "created_at": "2026-03-09T21:29:58.034041",
+    "updated_at": "2026-03-09T21:29:58.034041",
+    "last_refreshed": null,
+    "kwargs": {}
+  },
+  {
+    "id": "feed_a445e255",
+    "name": "Unemployment Rate",
+    "provider": "fred",
+    "series_id": "UNRATE",
+    "description": "",
+    "source": "",
+    "release": "",
+    "frequency": "Monthly",
+    "units": "Percent",
+    "dimensions": {},
+    "params": {
+      "series_id": "UNRATE"
+    },
+    "tags": [
+      "Labor"
+    ],
+    "refresh_schedule": "daily",
+    "provider_metadata": {},
+    "created_at": "2026-03-09T21:46:17.893716",
+    "updated_at": "2026-03-09T21:46:17.893716",
+    "last_refreshed": null,
+    "kwargs": {}
   }
 ]
