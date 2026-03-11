@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from modules.config.dashboard_config import save_config
-from modules.config.chart_catalog import get_item as catalog_get_item
+from modules.config.chart_config import get_item as get_chart_item
 from modules.data_ingestion.fred_loader import load_fred_series
 from modules.data_processing.transforms import (
     month_over_month,
@@ -347,13 +347,12 @@ def _render_catalog_chart_section(
     sec: Dict[str, Any],
     config: Dict[str, Any],
 ) -> None:
-    """Load a saved catalog chart item and render it."""
-    catalog_id = sec.get("catalog_id", "")
-    item_id = sec.get("item_id", "")
-    item = catalog_get_item(catalog_id, item_id)
+    """Load a saved chart item from catalogs/charts.json and render it."""
+    chart_id = sec.get("chart_id", "")
+    item = get_chart_item(chart_id) if chart_id else None
 
     if item is None:
-        st.warning(f"Saved chart not found (catalog: {catalog_id}, item: {item_id})")
+        st.warning(f"Saved chart not found: {chart_id}")
         return
 
     title = sec.get("title_override") or item.get("title", "Chart")
@@ -553,9 +552,10 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
 
     cols = st.columns(len(cards))
     for col, ref in zip(cols, cards):
-        item = catalog_get_item(ref.get("catalog_id", ""), ref.get("item_id", ""))
+        chart_id = ref.get("chart_id", "")
+        item = get_chart_item(chart_id) if chart_id else None
         if item is None:
-            col.warning("Card not found")
+            col.warning(f"Card not found: {chart_id}")
             continue
 
         card_title = item.get("title", "")
@@ -590,8 +590,7 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
                     pass
 
         if series is None or series.empty:
-            source_hint = f"`{dataset_name}/{column}`" if dataset_name else "no data source"
-            col.warning(f"{card_title or 'Card'}: no data ({source_hint})")
+            col.warning(f"{card_title or 'Card'}: no data")
             continue
 
         value = series.iloc[-1]
@@ -613,7 +612,7 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
         except Exception:
             val_str = f"{pfx}{value}{sfx}"
 
-        col.metric(card_title or (column or "Value"), val_str, delta_str)
+        col.metric(card_title or "Value", val_str, delta_str)
 
         # Backward compat: show release dates if present (old format)
         prior = item.get("prior_release") or ""
@@ -715,10 +714,10 @@ def render(config: Dict[str, Any], preview: bool = False) -> None:
         if len(row) == 1:
             sec = row[0]
             sec_type = sec.get("type", "chart")
-            if sec_type == "chart":
-                _render_chart_section(sec, config)
-            elif sec_type == "catalog_chart":
+            if sec_type == "chart" and sec.get("chart_id"):
                 _render_catalog_chart_section(sec, config)
+            elif sec_type == "chart":
+                _render_chart_section(sec, config)
             elif sec_type == "card_row":
                 _render_card_row_section(sec)
             elif sec_type == "news":
@@ -732,10 +731,10 @@ def render(config: Dict[str, Any], preview: bool = False) -> None:
             for col, sec in zip(cols, row):
                 sec_type = sec.get("type", "chart")
                 with col:
-                    if sec_type == "chart":
-                        _render_chart_section(sec, config)
-                    elif sec_type == "catalog_chart":
+                    if sec_type == "chart" and sec.get("chart_id"):
                         _render_catalog_chart_section(sec, config)
+                    elif sec_type == "chart":
+                        _render_chart_section(sec, config)
                     elif sec_type == "news":
                         render_news_section(
                             sec.get("query") or news_query,

@@ -1,24 +1,19 @@
 """
-Chart Builder and Chart Catalogs pages — extracted from app.py.
+Chart Builder — extracted from app.py.
 
 Provides:
     render_chart_builder()   — the Chart Builder tool page
-    render_chart_catalogs()  — the Chart Catalogs tool page
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-from modules.config.chart_catalog import (
-    list_catalogs,
-    load_catalog,
-    save_catalog,
-    create_catalog,
-    delete_catalog,
-    get_item as catalog_get_item,
+from modules.config.chart_config import (
+    list_items as list_chart_items,
+    get_item as get_chart_item,
     upsert_item,
-    delete_item as catalog_delete_item,
+    delete_item as delete_chart_item,
 )
 from components.feed_picker import feed_picker
 
@@ -71,8 +66,6 @@ def _init_state():
         st.session_state.cb_item_id = None
     if "cb_item_type" not in st.session_state:
         st.session_state.cb_item_type = "Chart"
-    if "cb_catalog_id" not in st.session_state:
-        st.session_state.cb_catalog_id = None
     if "cb_edit_request" not in st.session_state:
         st.session_state.cb_edit_request = None
     if "cb_editing_idx" not in st.session_state:
@@ -91,8 +84,6 @@ def _init_state():
         st.session_state.cb_card_delta_type = "none"
 
     # Chart Catalogs — delete confirmation state
-    if "cc_pending_delete_catalog" not in st.session_state:
-        st.session_state.cc_pending_delete_catalog = None  # catalog_id awaiting confirmation
     if "cc_pending_delete_item" not in st.session_state:
         st.session_state.cc_pending_delete_item = None  # item_id awaiting confirmation
 
@@ -198,11 +189,10 @@ def render_chart_builder():
     _edit_req = st.session_state.cb_edit_request
     if _edit_req:
         st.session_state.cb_edit_request = None
-        _er_item = catalog_get_item(_edit_req["catalog_id"], _edit_req["item_id"])
+        _er_item = get_chart_item(_edit_req["item_id"])
         if _er_item:
             _er_type = _er_item.get("type", "chart")
             st.session_state.cb_item_id = _er_item["id"]
-            st.session_state.cb_catalog_id = _edit_req["catalog_id"]
             st.session_state.cb_item_type = "Chart" if _er_type == "chart" else "Card"
             if _er_type == "chart":
                 st.session_state.cb_series = _er_item.get("series", [])
@@ -236,74 +226,52 @@ def render_chart_builder():
                 st.session_state.cb_card_delta_type = _er_item.get("delta_type", "none")
 
     # ── Load / New bar ────────────────────────────────────────────────────
-    _cb_catalogs = list_catalogs()
+    _saved_items = list_chart_items()
     _col_load, _col_status = st.columns([3, 2])
     with _col_load:
-        if _cb_catalogs:
-            _load_exp = st.expander("Load from catalog")
+        if _saved_items:
+            _load_exp = st.expander("Load saved chart/card")
             with _load_exp:
-                _lc_options = {c["title"]: c["id"] for c in _cb_catalogs}
-                _lc_sel = st.selectbox(
-                    "Catalog",
-                    options=list(_lc_options.keys()),
-                    key="cb_load_catalog_sel",
+                _li_options = {
+                    f"{it.get('title', it['id'])} [{it.get('type','chart')}]": it["id"]
+                    for it in _saved_items
+                }
+                _li_sel = st.selectbox(
+                    "Item",
+                    options=list(_li_options.keys()),
+                    key="cb_load_item_sel",
                 )
-                if _lc_sel:
-                    _lc_id = _lc_options[_lc_sel]
-                    _lc_cat = load_catalog(_lc_id)
-                    _lc_items = _lc_cat.get("items", []) if _lc_cat else []
-                    if _lc_items:
-                        _li_options = {
-                            f"{it.get('title', it['id'])} [{it.get('type','chart')}]": it["id"]
-                            for it in _lc_items
-                        }
-                        _li_sel = st.selectbox(
-                            "Item",
-                            options=list(_li_options.keys()),
-                            key="cb_load_item_sel",
-                        )
-                        if st.button("Load Item", key="cb_load_item_btn"):
-                            _loaded = catalog_get_item(_lc_id, _li_options[_li_sel])
-                            if _loaded:
-                                st.session_state.cb_item_id = _loaded["id"]
-                                st.session_state.cb_catalog_id = _lc_id
-                                _ltype = _loaded.get("type", "chart")
-                                st.session_state.cb_item_type = "Chart" if _ltype == "chart" else "Card"
-                                if _ltype == "chart":
-                                    st.session_state.cb_series = _loaded.get("series", [])
-                                    st.session_state["cb_chart_title"] = _loaded.get("title", "")
-                                    _ya = _loaded.get("y_axis") or {}
-                                    _ya2 = _loaded.get("y_axis2") or {}
-                                    st.session_state["cb_use_y_min"] = _ya.get("min") is not None
-                                    st.session_state["cb_y_min"] = _ya.get("min") or 0.0
-                                    st.session_state["cb_use_y_max"] = _ya.get("max") is not None
-                                    st.session_state["cb_y_max"] = _ya.get("max") or 100.0
-                                    st.session_state["cb_use_y_min2"] = _ya2.get("min") is not None
-                                    st.session_state["cb_y_min2"] = _ya2.get("min") or 0.0
-                                    st.session_state["cb_use_y_max2"] = _ya2.get("max") is not None
-                                    st.session_state["cb_y_max2"] = _ya2.get("max") or 100.0
-                                    st.session_state["cb_show_legend"] = _loaded.get("show_legend", True)
-                                    st.session_state.cb_data = _load_chart_series_data(_loaded.get("series", []))
-                                else:
-                                    # Feed-first: use feed_id if present, else resolve
-                                    _ld_feed_id = _loaded.get("feed_id")
-                                    if not _ld_feed_id:
-                                        _ld_fred_id = _loaded.get("fred_series_id", "")
-                                        if _ld_fred_id:
-                                            from modules.config.feed_catalog import find_feed as _ld_find
-                                            _ld_found = _ld_find("fred", _ld_fred_id)
-                                            if _ld_found:
-                                                _ld_feed_id = _ld_found["id"]
-                                    st.session_state.cb_card_feed_id = _ld_feed_id
-                                    st.session_state.cb_card_title = _loaded.get("title", "")
-                                    st.session_state.cb_card_value_format = _loaded.get("value_format", ",.2f")
-                                    st.session_state.cb_card_value_suffix = _loaded.get("value_suffix", "")
-                                    st.session_state.cb_card_delta_type = _loaded.get("delta_type", "none")
-                                st.rerun()
-                    else:
-                        st.caption("Catalog is empty.")
+                if st.button("Load Item", key="cb_load_item_btn"):
+                    _loaded = get_chart_item(_li_options[_li_sel])
+                    if _loaded:
+                        st.session_state.cb_item_id = _loaded["id"]
+                        _ltype = _loaded.get("type", "chart")
+                        st.session_state.cb_item_type = "Chart" if _ltype == "chart" else "Card"
+                        if _ltype == "chart":
+                            st.session_state.cb_series = _loaded.get("series", [])
+                            st.session_state["cb_chart_title"] = _loaded.get("title", "")
+                            _ya = _loaded.get("y_axis") or {}
+                            _ya2 = _loaded.get("y_axis2") or {}
+                            st.session_state["cb_use_y_min"] = _ya.get("min") is not None
+                            st.session_state["cb_y_min"] = _ya.get("min") or 0.0
+                            st.session_state["cb_use_y_max"] = _ya.get("max") is not None
+                            st.session_state["cb_y_max"] = _ya.get("max") or 100.0
+                            st.session_state["cb_use_y_min2"] = _ya2.get("min") is not None
+                            st.session_state["cb_y_min2"] = _ya2.get("min") or 0.0
+                            st.session_state["cb_use_y_max2"] = _ya2.get("max") is not None
+                            st.session_state["cb_y_max2"] = _ya2.get("max") or 100.0
+                            st.session_state["cb_show_legend"] = _loaded.get("show_legend", True)
+                            st.session_state.cb_data = _load_chart_series_data(_loaded.get("series", []))
+                        else:
+                            _ld_feed_id = _loaded.get("feed_id")
+                            st.session_state.cb_card_feed_id = _ld_feed_id
+                            st.session_state.cb_card_title = _loaded.get("title", "")
+                            st.session_state.cb_card_value_format = _loaded.get("value_format", ",.2f")
+                            st.session_state.cb_card_value_suffix = _loaded.get("value_suffix", "")
+                            st.session_state.cb_card_delta_type = _loaded.get("delta_type", "none")
+                        st.rerun()
         else:
-            st.caption("No catalogs yet — save an item below to create one.")
+            st.caption("No saved charts yet — save an item below.")
 
     with _col_status:
         if st.session_state.cb_item_id:
@@ -311,7 +279,6 @@ def render_chart_builder():
             st.info(f"Editing: **{_status_label}**")
             if st.button("New (clear)", key="cb_new_btn"):
                 st.session_state.cb_item_id = None
-                st.session_state.cb_catalog_id = None
                 st.session_state.cb_series = []
                 st.session_state.cb_data = {}
                 st.session_state.cb_card_feed_id = None
@@ -478,7 +445,7 @@ def render_chart_builder():
                                 if new_label in new_data:
                                     cb_data[new_label] = new_data[new_label]
                                 # Auto-save to catalog when editing an existing item
-                                if st.session_state.cb_item_id and st.session_state.cb_catalog_id:
+                                if st.session_state.cb_item_id:
                                     _as_ya = {
                                         "min": st.session_state.get("cb_y_min") if st.session_state.get("cb_use_y_min") else None,
                                         "max": st.session_state.get("cb_y_max") if st.session_state.get("cb_use_y_max") else None,
@@ -497,7 +464,7 @@ def render_chart_builder():
                                         "show_legend": st.session_state.get("cb_show_legend", True),
                                         "series": list(cb_series),
                                     }
-                                    upsert_item(st.session_state.cb_catalog_id, _autosave_item)
+                                    upsert_item(_autosave_item)
                                 st.session_state.cb_editing_idx = None
                                 st.rerun()
                         with _ed_cancel:
@@ -735,45 +702,23 @@ def render_chart_builder():
 
         # ── Save bar (Chart) — always visible ─────────────────────────────
         st.markdown("---")
-        st.markdown("**Save to Catalog**")
-        _sv_catalogs = list_catalogs()
-        _sv_col1, _sv_col2 = st.columns([3, 2])
-        with _sv_col1:
-            _sv_cat_options = {c["title"]: c["id"] for c in _sv_catalogs}
-            if _sv_cat_options:
-                _sv_cat_sel = st.selectbox(
-                    "Catalog",
-                    options=list(_sv_cat_options.keys()),
-                    key="cb_save_catalog_sel",
-                )
-                _sv_cat_id = _sv_cat_options.get(_sv_cat_sel, "")
-            else:
-                _sv_cat_id = ""
-                st.caption("No catalogs yet — create one below.")
-            with st.expander("Create new catalog"):
-                _new_cat_title = st.text_input("New catalog name", key="cb_new_cat_title")
-                _new_cat_desc = st.text_input("Description (optional)", key="cb_new_cat_desc")
-                if st.button("Create Catalog", key="cb_create_cat_btn"):
-                    if _new_cat_title.strip():
-                        _created = create_catalog(_new_cat_title.strip(), _new_cat_desc.strip())
-                        st.success(f"Created catalog: {_created['title']}")
-                        st.rerun()
-                    else:
-                        st.warning("Enter a catalog name.")
+        st.markdown("**Save Chart**")
 
-        with _sv_col2:
-            _sv_item_title = st.text_input(
-                "Item title",
-                value=st.session_state.get("cb_chart_title", ""),
-                key="cb_save_item_title",
-            )
-            _sv_can_save = bool(_sv_cat_id and cb_series)
+        _sv_item_title = st.text_input(
+            "Chart title",
+            value=st.session_state.get("cb_chart_title", ""),
+            key="cb_save_item_title",
+        )
+        _sv_can_save = bool(cb_series)
+        _sv_col_save, _sv_col_saveas = st.columns(2)
+        with _sv_col_save:
             if st.button(
-                "Save to Catalog",
+                "Save",
                 key="cb_save_chart_btn",
                 type="primary",
                 disabled=not _sv_can_save,
-                help="Add at least one series and select a catalog first" if not _sv_can_save else "",
+                use_container_width=True,
+                help="Add at least one series first" if not _sv_can_save else "",
             ):
                 _item_dict = {
                     "type": "chart",
@@ -793,22 +738,22 @@ def render_chart_builder():
                 }
                 if st.session_state.cb_item_id:
                     _item_dict["id"] = st.session_state.cb_item_id
-                _saved_id = upsert_item(_sv_cat_id, _item_dict)
-                _cat_title = _sv_cat_sel if _sv_cat_options else _sv_cat_id
+                _saved_id = upsert_item(_item_dict)
                 # Clear form for next chart
                 st.session_state.cb_item_id = None
-                st.session_state.cb_catalog_id = _sv_cat_id
                 st.session_state.cb_series = []
                 st.session_state.cb_data = {}
                 st.session_state["cb_chart_title"] = ""
-                st.toast(f"Saved to {_cat_title}")
+                st.toast("Chart saved")
                 st.rerun()
 
+        with _sv_col_saveas:
             # Save As New (only when editing an existing item)
             if st.session_state.cb_item_id and _sv_can_save:
                 if st.button(
                     "Save As New",
                     key="cb_saveas_chart_btn",
+                    use_container_width=True,
                     help="Save a copy without overwriting the original",
                 ):
                     _item_dict_new = {
@@ -822,15 +767,13 @@ def render_chart_builder():
                         "series": list(cb_series),
                         # no "id" — forces upsert_item to create a new item
                     }
-                    _saved_id = upsert_item(_sv_cat_id, _item_dict_new)
-                    _cat_title = _sv_cat_sel if _sv_cat_options else _sv_cat_id
+                    _saved_id = upsert_item(_item_dict_new)
                     # Clear form for next chart
                     st.session_state.cb_item_id = None
-                    st.session_state.cb_catalog_id = _sv_cat_id
                     st.session_state.cb_series = []
                     st.session_state.cb_data = {}
                     st.session_state["cb_chart_title"] = ""
-                    st.toast(f"Saved as new to {_cat_title}")
+                    st.toast("Saved as new chart")
                     st.rerun()
 
     # ── Correlation Heatmap ──────────────────────────────────────────────
@@ -1019,206 +962,111 @@ def render_chart_builder():
 
         # ── Save bar (Card) ───────────────────────────────────────────
         st.markdown("---")
-        st.markdown("**Save to Catalog**")
-        _sv_catalogs_c = list_catalogs()
-        _svc_col1, _svc_col2 = st.columns([3, 2])
-        with _svc_col1:
-            _svc_options = {c["title"]: c["id"] for c in _sv_catalogs_c}
-            if _svc_options:
-                _svc_sel = st.selectbox(
-                    "Catalog",
-                    options=list(_svc_options.keys()),
-                    key="cb_save_catalog_card_sel",
-                )
-                _svc_id = _svc_options.get(_svc_sel, "")
-            else:
-                _svc_id = ""
-                st.caption("No catalogs yet.")
-            with st.expander("Create new catalog"):
-                _new_cat_title_c = st.text_input("New catalog name", key="cb_new_cat_title_c")
-                _new_cat_desc_c = st.text_input("Description (optional)", key="cb_new_cat_desc_c")
-                if st.button("Create Catalog", key="cb_create_cat_btn_c"):
-                    if _new_cat_title_c.strip():
-                        _created_c = create_catalog(_new_cat_title_c.strip(), _new_cat_desc_c.strip())
-                        st.success(f"Created catalog: {_created_c['title']}")
-                        st.rerun()
-                    else:
-                        st.warning("Enter a catalog name.")
+        st.markdown("**Save Card**")
 
-        with _svc_col2:
-            _svc_item_title = st.text_input(
-                "Item title",
-                value=_card_title or _card_feed_name or "",
-                key="cb_save_card_item_title",
-            )
-            _svc_can_save = bool(_svc_id and _card_feed_id)
-            if st.button(
-                "Save to Catalog",
-                key="cb_save_card_btn",
-                type="primary",
-                disabled=not _svc_can_save,
-                help="Select a feed and catalog first" if not _svc_can_save else "",
-            ):
-                _card_item = {
-                    "type": "card",
-                    "title": _svc_item_title.strip() or _card_title or _card_feed_name,
-                    "feed_id": _card_feed_id,
-                    "value_format": _card_fmt or ",.2f",
-                    "value_suffix": _card_sfx,
-                    "delta_type": _card_delta,
-                }
-                if st.session_state.cb_item_id:
-                    _card_item["id"] = st.session_state.cb_item_id
-                _saved_card_id = upsert_item(_svc_id, _card_item)
-                _cat_title_c = _svc_sel if _svc_options else _svc_id
-                # Clear form for next card
-                st.session_state.cb_item_id = None
-                st.session_state.cb_catalog_id = _svc_id
-                st.session_state.cb_card_feed_id = None
-                st.session_state.cb_card_title = ""
-                st.session_state.cb_card_value_format = ",.2f"
-                st.session_state.cb_card_value_suffix = ""
-                st.session_state.cb_card_delta_type = "none"
-                st.toast(f"Saved to {_cat_title_c}")
-                st.rerun()
+        _svc_item_title = st.text_input(
+            "Card title",
+            value=_card_title or _card_feed_name or "",
+            key="cb_save_card_item_title",
+        )
+        _svc_can_save = bool(_card_feed_id)
+        if st.button(
+            "Save",
+            key="cb_save_card_btn",
+            type="primary",
+            disabled=not _svc_can_save,
+            use_container_width=True,
+            help="Select a feed first" if not _svc_can_save else "",
+        ):
+            _card_item = {
+                "type": "card",
+                "title": _svc_item_title.strip() or _card_title or _card_feed_name,
+                "feed_id": _card_feed_id,
+                "value_format": _card_fmt or ",.2f",
+                "value_suffix": _card_sfx,
+                "delta_type": _card_delta,
+            }
+            if st.session_state.cb_item_id:
+                _card_item["id"] = st.session_state.cb_item_id
+            _saved_card_id = upsert_item(_card_item)
+            # Clear form for next card
+            st.session_state.cb_item_id = None
+            st.session_state.cb_card_feed_id = None
+            st.session_state.cb_card_title = ""
+            st.session_state.cb_card_value_format = ",.2f"
+            st.session_state.cb_card_value_suffix = ""
+            st.session_state.cb_card_delta_type = "none"
+            st.toast("Card saved")
+            st.rerun()
+
+    # ── Saved charts list (always shown at bottom) ────────────────────
+    _render_saved_charts()
 
 
-# =============================================================================
-# render_chart_catalogs
-# =============================================================================
-
-def render_chart_catalogs():
-    """Render the Chart Catalogs page."""
+def _render_saved_charts():
+    """Render saved charts/cards list below Chart Builder."""
     _init_state()
 
-    st.title("Chart Catalogs")
-    st.markdown("Review and manage saved charts and cards.")
+    st.markdown("---")
+    st.subheader("Saved Charts & Cards")
 
-    _cc_catalogs = list_catalogs()
+    _cc_items = list_chart_items()
 
-    if not _cc_catalogs:
-        st.info("No catalogs yet. Build a chart or card in **Chart Builder** and save it to a catalog.")
-    else:
-        # Catalog selector — remember selection across page visits
-        _cc_cat_titles = [c["title"] for c in _cc_catalogs]
-        _cc_cat_ids = {c["title"]: c["id"] for c in _cc_catalogs}
+    if not _cc_items:
+        st.info("No saved charts or cards yet. Build one above and save it.")
+        return
 
-        # Restore previous selection if still valid
-        _cc_default_idx = 0
-        if "cc_last_catalog" in st.session_state:
-            _cc_last = st.session_state.cc_last_catalog
-            if _cc_last in _cc_cat_titles:
-                _cc_default_idx = _cc_cat_titles.index(_cc_last)
+    # Filter
+    _cc_type_filter = st.radio("Filter", ["All", "Charts", "Cards"], horizontal=True, key="cc_type_filter")
+    if _cc_type_filter == "Charts":
+        _cc_items = [i for i in _cc_items if i.get("type") == "chart"]
+    elif _cc_type_filter == "Cards":
+        _cc_items = [i for i in _cc_items if i.get("type") == "card"]
 
-        _cc_selected_title = st.selectbox(
-            "Catalog",
-            options=_cc_cat_titles,
-            index=_cc_default_idx,
-            key="cc_catalog_sel",
-        )
-        st.session_state.cc_last_catalog = _cc_selected_title
-        _cc_catalog_id = _cc_cat_ids[_cc_selected_title]
-        _cc_cat_data = load_catalog(_cc_catalog_id)
+    st.caption(f"{len(_cc_items)} item(s)")
 
-        if _cc_cat_data:
-            # Catalog management in a compact row
-            _cc_mgmt_col1, _cc_mgmt_col2 = st.columns([5, 1])
-            with _cc_mgmt_col1:
-                _cc_desc = _cc_cat_data.get("description", "")
-                if _cc_desc:
-                    st.caption(_cc_desc)
-            with _cc_mgmt_col2:
-                if st.session_state.cc_pending_delete_catalog == _cc_catalog_id:
-                    _dcc1, _dcc2 = st.columns(2)
-                    with _dcc1:
-                        if st.button("Confirm Delete", key="cc_del_cat_confirm_btn", type="primary"):
-                            delete_catalog(_cc_catalog_id)
-                            st.session_state.cc_pending_delete_catalog = None
-                            st.session_state.pop("cc_last_catalog", None)
-                            st.toast(f"Deleted catalog: {_cc_selected_title}")
-                            st.rerun()
-                    with _dcc2:
-                        if st.button("Cancel", key="cc_del_cat_cancel_btn"):
-                            st.session_state.cc_pending_delete_catalog = None
-                            st.rerun()
-                else:
-                    if st.button("Delete Catalog", key="cc_del_cat_btn", type="secondary"):
-                        st.session_state.cc_pending_delete_catalog = _cc_catalog_id
-                        st.rerun()
+    for _ci in _cc_items:
+        _ci_type = _ci.get("type", "chart")
+        _ci_icon = "📊" if _ci_type == "chart" else "🔢"
+        _ci_title = _ci.get("title", _ci["id"])
 
-            # Edit catalog info in expander (less prominent)
-            with st.expander("Edit catalog info"):
-                _cc_new_title = st.text_input(
-                    "Catalog title",
-                    value=_cc_cat_data.get("title", ""),
-                    key="cc_cat_title_input",
-                )
-                _cc_new_desc = st.text_input(
-                    "Description",
-                    value=_cc_cat_data.get("description", ""),
-                    key="cc_cat_desc_input",
-                    placeholder="Optional description",
-                )
-                if st.button("Save catalog info", key="cc_save_cat_btn"):
-                    _cc_cat_data["title"] = _cc_new_title.strip() or _cc_cat_data["title"]
-                    _cc_cat_data["description"] = _cc_new_desc.strip()
-                    save_catalog(_cc_cat_data)
-                    st.session_state.cc_last_catalog = _cc_cat_data["title"]
-                    st.toast("Catalog updated.")
+        _cc_i_col1, _cc_i_col2, _cc_i_col3 = st.columns([5, 1, 1])
+        with _cc_i_col1:
+            st.markdown(f"**{_ci_icon} {_ci_title}**  `{_ci_type}`")
+            if _ci_type == "chart":
+                _ci_series = _ci.get("series", [])
+                if _ci_series:
+                    st.caption(
+                        "Series: " + ", ".join(
+                            f"`{s['label']}`" for s in _ci_series
+                        )
+                    )
+            elif _ci_type == "card":
+                _ci_feed = _ci.get("feed_id", "")
+                if _ci_feed:
+                    st.caption(f"Feed: `{_ci_feed}`")
+
+        with _cc_i_col2:
+            if st.button("Edit", key=f"cc_edit_{_ci['id']}", use_container_width=True):
+                st.session_state.cb_edit_request = {
+                    "item_id": _ci["id"],
+                }
+                st.session_state.page = "Chart Builder"
+                st.rerun()
+
+        with _cc_i_col3:
+            if st.session_state.cc_pending_delete_item == _ci["id"]:
+                if st.button("Confirm", key=f"cc_del_confirm_{_ci['id']}", type="primary", use_container_width=True):
+                    delete_chart_item(_ci["id"])
+                    st.session_state.cc_pending_delete_item = None
+                    st.toast(f"Deleted: {_ci_title}")
+                    st.rerun()
+                if st.button("Cancel", key=f"cc_del_cancel_{_ci['id']}", use_container_width=True):
+                    st.session_state.cc_pending_delete_item = None
+                    st.rerun()
+            else:
+                if st.button("Delete", key=f"cc_del_{_ci['id']}", type="secondary", use_container_width=True):
+                    st.session_state.cc_pending_delete_item = _ci["id"]
                     st.rerun()
 
-            st.markdown("---")
-
-            _cc_items = _cc_cat_data.get("items", [])
-            if not _cc_items:
-                st.info("This catalog is empty.")
-            else:
-                st.markdown(f"**{len(_cc_items)} item(s)**")
-
-                for _ci in _cc_items:
-                    _ci_type = _ci.get("type", "chart")
-                    _ci_icon = "📊" if _ci_type == "chart" else "🔢"
-                    _ci_title = _ci.get("title", _ci["id"])
-
-                    # Each item shown as a row with info + action buttons visible
-                    _cc_i_col1, _cc_i_col2, _cc_i_col3 = st.columns([5, 1, 1])
-                    with _cc_i_col1:
-                        st.markdown(f"**{_ci_icon} {_ci_title}**  `{_ci_type}`")
-                        if _ci_type == "chart":
-                            _ci_series = _ci.get("series", [])
-                            if _ci_series:
-                                st.caption(
-                                    "Series: " + ", ".join(
-                                        f"`{s['label']}`" for s in _ci_series
-                                    )
-                                )
-                        elif _ci_type == "card":
-                            _ci_ds = _ci.get("dataset_name", "")
-                            _ci_col = _ci.get("column", "")
-                            st.caption(f"Dataset: `{_ci_ds}`  ·  Column: `{_ci_col}`")
-
-                    with _cc_i_col2:
-                        if st.button("Edit", key=f"cc_edit_{_ci['id']}", use_container_width=True):
-                            st.session_state.cb_edit_request = {
-                                "catalog_id": _cc_catalog_id,
-                                "item_id": _ci["id"],
-                            }
-                            st.session_state.page = "Chart Builder"
-                            st.rerun()
-
-                    with _cc_i_col3:
-                        if st.session_state.cc_pending_delete_item == _ci["id"]:
-                            if st.button("Confirm", key=f"cc_del_confirm_{_ci['id']}", type="primary", use_container_width=True):
-                                catalog_delete_item(_cc_catalog_id, _ci["id"])
-                                st.session_state.cc_pending_delete_item = None
-                                st.toast(f"Deleted: {_ci_title}")
-                                st.rerun()
-                            if st.button("Cancel", key=f"cc_del_cancel_{_ci['id']}", use_container_width=True):
-                                st.session_state.cc_pending_delete_item = None
-                                st.rerun()
-                        else:
-                            if st.button("Delete", key=f"cc_del_{_ci['id']}", type="secondary", use_container_width=True):
-                                st.session_state.cc_pending_delete_item = _ci["id"]
-                                st.rerun()
-
-                    st.divider()
+        st.divider()

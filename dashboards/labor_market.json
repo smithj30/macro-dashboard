@@ -12,48 +12,30 @@
       "layout": "full",
       "cards": [
         {
-          "catalog_id": "labor_force_data",
-          "item_id": "item_805538e4"
+          "chart_id": "item_805538e4"
         },
         {
-          "catalog_id": "labor_force_data",
-          "item_id": "item_3ec1da83"
+          "chart_id": "item_3ec1da83"
         },
         {
-          "catalog_id": "labor_force_data",
-          "item_id": "item_12433a67"
+          "chart_id": "item_12433a67"
         },
         {
-          "catalog_id": "labor_force_data",
-          "item_id": "item_a079e846"
+          "chart_id": "item_a079e846"
         }
       ]
     },
     {
-      "id": "sec_45310647",
-      "type": "catalog_chart",
-      "layout": "half",
-      "catalog_id": "labor_force_data",
-      "item_id": "item_e89a6b04",
-      "title_override": null,
-      "chart_type": "line",
-      "y_axis": {
-        "min": null,
-        "max": 2.0
-      }
-    },
-    {
       "id": "sec_c472f42d",
-      "type": "catalog_chart",
+      "type": "chart",
       "layout": "half",
-      "catalog_id": "labor_force_data",
-      "item_id": "item_261bad62",
       "title_override": "Unemployment Rate",
       "chart_type": "line",
       "y_axis": {
         "min": null,
         "max": 6.0
-      }
+      },
+      "chart_id": "item_261bad62"
     }
   ]
 }

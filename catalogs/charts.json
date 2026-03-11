@@ -1,1 +1,180 @@
-[]
+[
+  {
+    "type": "chart",
+    "title": "Unemployment Rate",
+    "chart_subtype": "Time Series",
+    "y_axis": {
+      "min": null,
+      "max": null
+    },
+    "y_axis2": {
+      "min": null,
+      "max": null
+    },
+    "show_legend": true,
+    "default_range_years": null,
+    "series": [
+      {
+        "label": "UNRATE",
+        "chart_type": "line",
+        "axis": 1,
+        "source": "catalog",
+        "series_id": null,
+        "catalog_name": "Unemployment Rate",
+        "col": "UNRATE",
+        "transform": "none",
+        "rolling_window": 12
+      }
+    ],
+    "id": "item_261bad62",
+    "updated_at": "2026-03-09T21:57:39.988846",
+    "created_at": "2026-02-27T11:54:30.258980",
+    "tags": [
+      "Labor Force Data"
+    ]
+  },
+  {
+    "type": "chart",
+    "title": "Time Series",
+    "chart_subtype": "Time Series",
+    "y_axis": {
+      "min": null,
+      "max": null
+    },
+    "y_axis2": {
+      "min": null,
+      "max": null
+    },
+    "show_legend": true,
+    "series": [
+      {
+        "label": "New Orders",
+        "chart_type": "line",
+        "axis": 1,
+        "source": "catalog",
+        "series_id": null,
+        "catalog_name": "Manufacturers' New Orders",
+        "col": "AMTMNO",
+        "transform": "none",
+        "rolling_window": 12
+      }
+    ],
+    "id": "item_7e18598a",
+    "created_at": "2026-03-02T20:51:41.727897",
+    "updated_at": "2026-03-02T20:51:41.727897",
+    "tags": [
+      "Labor Force Data"
+    ]
+  },
+  {
+    "type": "chart",
+    "title": "Manufacturing New Orders & Shipments",
+    "chart_subtype": "Time Series",
+    "y_axis": {
+      "min": null,
+      "max": null
+    },
+    "y_axis2": {
+      "min": null,
+      "max": null
+    },
+    "show_legend": true,
+    "series": [
+      {
+        "label": "New Orders",
+        "chart_type": "line",
+        "axis": 1,
+        "source": "catalog",
+        "series_id": null,
+        "catalog_name": "AMTMNO",
+        "col": "AMTMNO",
+        "transform": "yoy",
+        "rolling_window": 12
+      },
+      {
+        "label": "Shipments",
+        "chart_type": "line",
+        "axis": 1,
+        "source": "catalog",
+        "series_id": null,
+        "catalog_name": "AMTMVS",
+        "col": "AMTMVS",
+        "transform": "yoy",
+        "rolling_window": 12
+      },
+      {
+        "label": "Prices Paid (PPI Mfg)",
+        "chart_type": "line",
+        "axis": 1,
+        "source": "catalog",
+        "series_id": null,
+        "catalog_name": "PCUOMFGOMFG",
+        "col": "PCUOMFGOMFG",
+        "transform": "yoy",
+        "rolling_window": 12
+      }
+    ],
+    "id": "item_bc5e8017",
+    "created_at": "2026-03-03T15:55:57.957652",
+    "updated_at": "2026-03-03T15:55:57.957652",
+    "tags": [
+      "Labor Force Data"
+    ]
+  },
+  {
+    "type": "card",
+    "title": "All Employees, Total Nonfarm",
+    "feed_id": "feed_a445e255",
+    "value_format": ",.1f",
+    "value_suffix": "%",
+    "delta_type": "period",
+    "id": "item_805538e4",
+    "updated_at": "2026-03-09T21:50:06.834999",
+    "created_at": "2026-03-09T21:45:33.211064",
+    "tags": [
+      "Labor Force Data"
+    ]
+  },
+  {
+    "type": "card",
+    "title": "Unemployment Rate",
+    "feed_id": "feed_a445e255",
+    "value_format": ",.1f",
+    "value_suffix": "%",
+    "delta_type": "period",
+    "id": "item_3ec1da83",
+    "created_at": "2026-03-09T21:53:38.025032",
+    "updated_at": "2026-03-09T21:53:38.025032",
+    "tags": [
+      "Labor Force Data"
+    ]
+  },
+  {
+    "type": "card",
+    "title": "Initial Claims",
+    "feed_id": "feed_6687fe55",
+    "value_format": ",.0f",
+    "value_suffix": "",
+    "delta_type": "period",
+    "id": "item_12433a67",
+    "created_at": "2026-03-09T21:54:00.119885",
+    "updated_at": "2026-03-09T21:54:00.119885",
+    "tags": [
+      "Labor Force Data"
+    ]
+  },
+  {
+    "type": "card",
+    "title": "Continued Claims (Insured Unemployment)",
+    "feed_id": "feed_acc0d1eb",
+    "value_format": ",.0f",
+    "value_suffix": "",
+    "delta_type": "period",
+    "id": "item_a079e846",
+    "created_at": "2026-03-09T21:54:11.930462",
+    "updated_at": "2026-03-09T21:54:11.930462",
+    "tags": [
+      "Labor Force Data"
+    ]
+  }
+]

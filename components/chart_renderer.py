@@ -138,7 +138,7 @@ def render_chart(
 
     Parameters
     ----------
-    chart_config : chart item dict from chart_catalogs/ JSON
+    chart_config : chart item dict from catalogs/charts.json
     data         : pre-loaded data keyed by series label
     show_recession : whether to show recession shading
     key_prefix   : prefix for Streamlit widget keys

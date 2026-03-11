@@ -1,33 +1,31 @@
 """
-Chart configuration storage layer (v2).
+Chart configuration storage layer.
 
-Charts are stored in catalogs/charts.json as a flat list of chart objects.
-Each chart references feeds by feed_id and contains display options.
+Charts and cards are stored in catalogs/charts.json as a flat list.
+Each item has a unique "id" and a "type" (chart or card).
+Charts reference feeds by feed_id in their series definitions.
 
-Chart schema (spec Section 3.3):
+Item schema:
 {
-    "chart_id": "unemployment_vs_claims",
-    "name": "Unemployment Rate vs. Initial Claims",
-    "chart_type": "time_series",           # time_series | bar | metric_card | heatmap | table
-    "feeds": [
-        {
-            "feed_id": "fred_unrate",
-            "label": "Unemployment Rate (%)",
-            "axis": "left",                # left | right
-            "color": "#1f77b4",            # optional override
-            "transform": null              # null | {"type": "rolling_avg", "window": 4}
-        }
-    ],
-    "options": {
-        "title": "Labor Market Overview",
-        "date_range": {"start": "2019-01-01", "end": null},
-        "recession_shading": true,
-        "show_legend": true,
-        "show_range_slider": true,
-        "height": 450,
-        "annotations": []
-    },
-    "tags": ["labor", "weekly"],
+    "id": "item_<8hex>",
+    "type": "chart" | "card",
+    "title": "Unemployment Rate",
+    "tags": ["labor"],
+
+    # Chart-specific fields:
+    "series": [...],
+    "chart_subtype": "Time Series",
+    "y_axis": {"min": null, "max": null},
+    "y_axis2": {"min": null, "max": null},
+    "show_legend": true,
+    "default_range_years": null,
+
+    # Card-specific fields:
+    "feed_id": "feed_xxx",
+    "value_format": ",.2f",
+    "value_suffix": "%",
+    "delta_type": "period",
+
     "created_at": "...",
     "updated_at": "..."
 }
@@ -42,7 +40,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _CHARTS_PATH = Path(__file__).parent.parent.parent / "catalogs" / "charts.json"
-_DASHBOARDS_DIR = Path(__file__).parent.parent.parent / "dashboards"
 
 
 def _ensure_dir() -> None:
@@ -50,7 +47,6 @@ def _ensure_dir() -> None:
 
 
 def _load_all() -> List[Dict[str, Any]]:
-    """Load the full charts list from disk."""
     if not _CHARTS_PATH.exists():
         return []
     try:
@@ -61,11 +57,10 @@ def _load_all() -> List[Dict[str, Any]]:
         return []
 
 
-def _save_all(charts: List[Dict[str, Any]]) -> None:
-    """Write the full charts list to disk."""
+def _save_all(items: List[Dict[str, Any]]) -> None:
     _ensure_dir()
     with open(_CHARTS_PATH, "w", encoding="utf-8") as f:
-        json.dump(charts, f, indent=2, default=str)
+        json.dump(items, f, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -73,149 +68,73 @@ def _save_all(charts: List[Dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def list_charts(
+def list_items(
+    item_type: Optional[str] = None,
     tags: Optional[List[str]] = None,
-    chart_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Return all charts, optionally filtered by tags and/or chart_type.
-    """
-    charts = _load_all()
-    if chart_type:
-        charts = [c for c in charts if c.get("chart_type") == chart_type]
+    """Return all items, optionally filtered by type and/or tags."""
+    items = _load_all()
+    if item_type:
+        items = [i for i in items if i.get("type") == item_type]
     if tags:
         tag_set = set(t.lower() for t in tags)
-        charts = [
-            c for c in charts
-            if tag_set & set(t.lower() for t in c.get("tags", []))
+        items = [
+            i for i in items
+            if tag_set & set(t.lower() for t in i.get("tags", []))
         ]
-    charts.sort(key=lambda c: c.get("name", "").lower())
-    return charts
+    items.sort(key=lambda i: i.get("title", "").lower())
+    return items
 
 
-def get_chart(chart_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single chart by chart_id, or None."""
-    for c in _load_all():
-        if c.get("chart_id") == chart_id:
-            return c
+def get_item(item_id: str) -> Optional[Dict[str, Any]]:
+    """Return a single item by ID, or None."""
+    for i in _load_all():
+        if i.get("id") == item_id:
+            return i
     return None
 
 
-def create_chart(
-    name: str,
-    chart_type: str = "time_series",
-    feeds: Optional[List[Dict[str, Any]]] = None,
-    options: Optional[Dict[str, Any]] = None,
-    tags: Optional[List[str]] = None,
-    chart_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Create and persist a new chart. Returns the chart dict."""
-    charts = _load_all()
+def upsert_item(item_dict: Dict[str, Any]) -> str:
+    """
+    Create or update an item. If item_dict has an "id" that exists, update it.
+    Otherwise create a new item with a generated ID.
+    Returns the item ID.
+    """
+    items = _load_all()
     now = datetime.now().isoformat()
-    chart = {
-        "chart_id": chart_id or f"chart_{uuid.uuid4().hex[:8]}",
-        "name": name.strip(),
-        "chart_type": chart_type,
-        "feeds": feeds or [],
-        "options": options or {
-            "title": name.strip(),
-            "date_range": {"start": None, "end": None},
-            "recession_shading": False,
-            "show_legend": True,
-            "show_range_slider": True,
-            "height": 450,
-            "annotations": [],
-        },
-        "tags": tags or [],
-        "created_at": now,
-        "updated_at": now,
-    }
-    charts.append(chart)
-    _save_all(charts)
-    return chart
+
+    item_id = item_dict.get("id")
+    if item_id:
+        for idx, existing in enumerate(items):
+            if existing.get("id") == item_id:
+                # Update: merge new fields into existing
+                existing.update(item_dict)
+                existing["updated_at"] = now
+                items[idx] = existing
+                _save_all(items)
+                return item_id
+
+    # Create new
+    if not item_id:
+        item_id = f"item_{uuid.uuid4().hex[:8]}"
+        item_dict["id"] = item_id
+    item_dict.setdefault("created_at", now)
+    item_dict["updated_at"] = now
+    items.append(item_dict)
+    _save_all(items)
+    return item_id
 
 
-def update_chart(chart_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Update a chart's fields. Returns the updated chart, or None if not found.
-    Protected fields: chart_id, created_at.
-    """
-    charts = _load_all()
-    for i, c in enumerate(charts):
-        if c.get("chart_id") == chart_id:
-            protected = {"chart_id", "created_at"}
-            for k, v in updates.items():
-                if k not in protected:
-                    c[k] = v
-            c["updated_at"] = datetime.now().isoformat()
-            charts[i] = c
-            _save_all(charts)
-            return c
-    return None
-
-
-def delete_chart(chart_id: str) -> bool:
-    """Delete a chart by chart_id. Returns True if deleted."""
-    charts = _load_all()
-    new_charts = [c for c in charts if c.get("chart_id") != chart_id]
-    if len(new_charts) == len(charts):
+def delete_item(item_id: str) -> bool:
+    """Delete an item by ID. Returns True if deleted."""
+    items = _load_all()
+    new_items = [i for i in items if i.get("id") != item_id]
+    if len(new_items) == len(items):
         return False
-    _save_all(new_charts)
+    _save_all(new_items)
     return True
 
 
-def find_charts_by_tag(tag: str) -> List[Dict[str, Any]]:
-    """Find all charts that have a specific tag."""
-    return [c for c in _load_all() if tag in c.get("tags", [])]
-
-
-def find_charts_by_feed(feed_id: str) -> List[Dict[str, Any]]:
-    """Find all charts that reference a specific feed_id."""
-    results = []
-    for c in _load_all():
-        for f in c.get("feeds", []):
-            if f.get("feed_id") == feed_id:
-                results.append(c)
-                break
-    return results
-
-
-def get_dashboard_refs(chart_id: str) -> List[str]:
-    """
-    Return list of dashboard IDs that reference this chart.
-    Scans all dashboard JSON files.
-    """
-    refs = []
-    if not _DASHBOARDS_DIR.exists():
-        return refs
-
-    for p in _DASHBOARDS_DIR.glob("*.json"):
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-
-            # Check new row-based layout
-            for row in cfg.get("layout", []):
-                if isinstance(row, dict):
-                    for item in row.get("items", []):
-                        if item.get("chart_id") == chart_id:
-                            refs.append(cfg.get("id") or cfg.get("dashboard_id", p.stem))
-                            break
-
-            # Check legacy sections format
-            for section in cfg.get("sections", []):
-                if isinstance(section, dict):
-                    # Sections might reference catalog items
-                    for series in section.get("series", []):
-                        if series.get("chart_id") == chart_id:
-                            refs.append(cfg.get("id", p.stem))
-                            break
-        except (json.JSONDecodeError, OSError):
-            continue
-
-    return list(set(refs))
-
-
-def chart_count() -> int:
-    """Return total number of charts."""
+def item_count() -> int:
+    """Return total number of items."""
     return len(_load_all())

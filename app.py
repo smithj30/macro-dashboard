@@ -94,7 +94,7 @@ _dynamic_dashboards = list_dynamic_dashboards()
 _dynamic_page_map = {cfg["title"]: cfg for cfg in _dynamic_dashboards}
 
 _DASHBOARD_PAGES = [cfg["title"] for cfg in _dynamic_dashboards]
-_TOOL_PAGES = ["Data Explorer", "Feed Manager", "Chart Builder", "Chart Catalogs", "Dashboard Builder", "Tag Manager", "Regression & Analysis", "Data Table"]
+_TOOL_PAGES = ["Data Explorer", "Feed Manager", "Chart Builder", "Dashboard Builder", "Tag Manager", "Regression & Analysis", "Data Table"]
 
 if "page" not in st.session_state:
     st.session_state.page = _DASHBOARD_PAGES[0] if _DASHBOARD_PAGES else _TOOL_PAGES[0]
@@ -230,14 +230,6 @@ elif page == "Feed Manager":
 elif page == "Chart Builder":
     from views.chart_editor import render_chart_builder
     render_chart_builder()
-
-# =============================================================================
-# PAGE: CHART CATALOGS
-# =============================================================================
-
-elif page == "Chart Catalogs":
-    from views.chart_editor import render_chart_catalogs
-    render_chart_catalogs()
 
 
 # =============================================================================

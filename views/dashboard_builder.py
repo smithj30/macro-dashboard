@@ -24,7 +24,7 @@ from modules.config.dashboard_config import (
     list_dynamic_dashboards,
     save_config,
 )
-from modules.config.chart_catalog import list_catalogs, load_catalog, get_item as catalog_get_item
+from modules.config.chart_config import list_items as list_chart_items, get_item as get_chart_item
 from modules.data_ingestion.fred_loader import search_fred
 
 
@@ -67,15 +67,15 @@ def _new_section_id() -> str:
     return f"sec_{uuid.uuid4().hex[:8]}"
 
 
-def _resolve_item_title(catalog_id: str, item_id: str) -> str:
-    """Look up the actual title of a chart/card item from its catalog."""
+def _resolve_item_title(chart_id: str) -> str:
+    """Look up the actual title of a chart/card item."""
     try:
-        item = catalog_get_item(catalog_id, item_id)
+        item = get_chart_item(chart_id)
         if item:
-            return item.get("title", item_id)
+            return item.get("title", chart_id)
     except Exception:
         pass
-    return item_id
+    return chart_id
 
 
 # ---------------------------------------------------------------------------
@@ -214,25 +214,25 @@ def _step_sections() -> None:
         st.markdown("**Current sections** (drag via ↑/↓ to reorder):")
         for idx, sec in enumerate(sections):
             _stype = sec.get("type", "chart")
-            _icon = {"chart": "📊", "news": "📰", "catalog_chart": "📊", "card_row": "🃏"}.get(_stype, "❓")
+            _icon = {"chart": "📊", "news": "📰", "card_row": "🃏"}.get(_stype, "❓")
             layout = sec.get("layout", "full")
 
             # Resolve display label
             if _stype == "card_row":
                 _card_names = []
                 for card in sec.get("cards", []):
-                    _card_names.append(_resolve_item_title(card.get("catalog_id", ""), card.get("item_id", "")))
+                    _card_names.append(_resolve_item_title(card.get("chart_id", "")))
                 _label = "Cards: " + ", ".join(_card_names) if _card_names else "Card Row (empty)"
-            elif _stype == "catalog_chart":
+            elif _stype == "chart" and sec.get("chart_id"):
                 if sec.get("title_override"):
                     _label = sec["title_override"]
                 else:
-                    _label = _resolve_item_title(sec.get("catalog_id", ""), sec.get("item_id", ""))
+                    _label = _resolve_item_title(sec.get("chart_id", ""))
             else:
                 _label = sec.get("title", "Untitled")
 
             # Determine if this section has an editable chart/card item
-            _has_open = _stype in ("catalog_chart", "card_row")
+            _has_open = sec.get("chart_id") or _stype == "card_row"
 
             col_info, col_settings, col_open, col_up, col_dn, col_rm = st.columns([4, 1, 1, 1, 1, 1])
 
@@ -245,21 +245,19 @@ def _step_sections() -> None:
                     st.rerun()
 
             with col_open:
-                if _stype == "catalog_chart":
+                if sec.get("chart_id"):
                     if st.button("Open", key=f"sec_edit_{idx}", use_container_width=True, help="Open in Chart Builder"):
                         st.session_state.cb_edit_request = {
-                            "catalog_id": sec.get("catalog_id", ""),
-                            "item_id": sec.get("item_id", ""),
+                            "item_id": sec.get("chart_id", ""),
                         }
                         st.session_state.page = "Chart Builder"
                         st.rerun()
                 elif _stype == "card_row":
                     cards = sec.get("cards", [])
-                    if cards:
+                    if cards and cards[0].get("chart_id"):
                         if st.button("Open", key=f"sec_edit_{idx}", use_container_width=True, help="Open in Chart Builder"):
                             st.session_state.cb_edit_request = {
-                                "catalog_id": cards[0].get("catalog_id", ""),
-                                "item_id": cards[0].get("item_id", ""),
+                                "item_id": cards[0].get("chart_id", ""),
                             }
                             st.session_state.page = "Chart Builder"
                             st.rerun()
@@ -296,7 +294,7 @@ def _step_sections() -> None:
                         key=f"sec_ed_layout_{idx}",
                     )
                     _ed_title_override = None
-                    if _stype == "catalog_chart":
+                    if sec.get("chart_id"):
                         _ed_title_override = st.text_input(
                             "Title override (blank = use item title)",
                             value=sec.get("title_override") or "",
@@ -313,7 +311,7 @@ def _step_sections() -> None:
                         if st.button("Apply", key=f"sec_ed_apply_{idx}", type="primary"):
                             sections[idx]["layout"] = _ed_layout
                             if _ed_title_override is not None:
-                                if _stype == "catalog_chart":
+                                if sec.get("chart_id"):
                                     sections[idx]["title_override"] = _ed_title_override.strip() or None
                                 else:
                                     sections[idx]["title"] = _ed_title_override.strip()
@@ -336,13 +334,13 @@ def _step_sections() -> None:
     # ── Add new section ────────────────────────────────────────────────────
     add_type = st.radio(
         "Add section type:",
-        ["Catalog Chart", "Card Row", "News"],
+        ["Saved Chart", "Card Row", "News"],
         horizontal=True,
         key="b_add_type",
     )
 
-    if add_type == "Catalog Chart":
-        _catalog_chart_section_form(draft, sections)
+    if add_type == "Saved Chart":
+        _saved_chart_section_form(draft, sections)
     elif add_type == "Card Row":
         _card_row_section_form(draft, sections)
     else:
@@ -526,57 +524,45 @@ def _news_section_form(draft: Dict[str, Any], sections: List[Dict[str, Any]]) ->
 # ---------------------------------------------------------------------------
 
 
-def _catalog_chart_section_form(draft: Dict[str, Any], sections: List[Dict[str, Any]]) -> None:
-    st.markdown("**New Catalog Chart Section**")
+def _saved_chart_section_form(draft: Dict[str, Any], sections: List[Dict[str, Any]]) -> None:
+    st.markdown("**Add Saved Chart**")
 
-    catalogs = list_catalogs()
-    if not catalogs:
-        st.info("No chart catalogs yet. Create one in the Chart Builder.")
+    chart_items = list_chart_items(item_type="chart")
+    if not chart_items:
+        st.info("No saved charts yet. Create one in the Chart Builder.")
         return
 
-    cat_options = {c["title"]: c["id"] for c in catalogs}
-    cat_sel = st.selectbox("Catalog", options=list(cat_options.keys()), key="b_cc_catalog")
-    cat_id = cat_options.get(cat_sel, "")
+    item_options = {f"{it.get('title', it['id'])}": it["id"] for it in chart_items}
+    item_sel = st.selectbox("Chart", options=list(item_options.keys()), key="b_cc_item")
+    chart_id = item_options.get(item_sel, "")
 
-    if cat_id:
-        cat_data = load_catalog(cat_id)
-        chart_items = [it for it in (cat_data.get("items", []) if cat_data else []) if it.get("type") == "chart"]
-        if not chart_items:
-            st.info("No chart items in this catalog.")
+    layout = st.selectbox(
+        "Layout",
+        options=_LAYOUT_OPTIONS,
+        format_func=lambda x: _LAYOUT_LABELS.get(x, x),
+        key="b_cc_layout",
+    )
+    title_override = st.text_input(
+        "Title override (blank = use item title)",
+        placeholder="Leave blank to use saved title",
+        key="b_cc_title_override",
+    )
+
+    if st.button("Add Chart Section", key="b_add_cc_section", type="primary"):
+        if not chart_id:
+            st.warning("Select a chart.")
             return
-
-        item_options = {f"{it.get('title', it['id'])}": it["id"] for it in chart_items}
-        item_sel = st.selectbox("Chart item", options=list(item_options.keys()), key="b_cc_item")
-        item_id = item_options.get(item_sel, "")
-
-        layout = st.selectbox(
-            "Layout",
-            options=_LAYOUT_OPTIONS,
-            format_func=lambda x: _LAYOUT_LABELS.get(x, x),
-            key="b_cc_layout",
-        )
-        title_override = st.text_input(
-            "Title override (blank = use item title)",
-            placeholder="Leave blank to use saved title",
-            key="b_cc_title_override",
-        )
-
-        if st.button("Add Catalog Chart Section", key="b_add_cc_section", type="primary"):
-            if not item_id:
-                st.warning("Select a chart item.")
-                return
-            new_sec: Dict[str, Any] = {
-                "id": _new_section_id(),
-                "type": "catalog_chart",
-                "layout": layout,
-                "catalog_id": cat_id,
-                "item_id": item_id,
-                "title_override": title_override.strip() or None,
-            }
-            sections.append(new_sec)
-            draft["sections"] = sections
-            st.session_state.builder_draft = draft
-            st.rerun()
+        new_sec: Dict[str, Any] = {
+            "id": _new_section_id(),
+            "type": "chart",
+            "layout": layout,
+            "chart_id": chart_id,
+            "title_override": title_override.strip() or None,
+        }
+        sections.append(new_sec)
+        draft["sections"] = sections
+        st.session_state.builder_draft = draft
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -587,48 +573,37 @@ def _catalog_chart_section_form(draft: Dict[str, Any], sections: List[Dict[str, 
 def _card_row_section_form(draft: Dict[str, Any], sections: List[Dict[str, Any]]) -> None:
     st.markdown("**New Card Row Section**")
 
-    catalogs = list_catalogs()
-    if not catalogs:
-        st.info("No chart catalogs yet. Create one in the Chart Builder.")
+    card_items = list_chart_items(item_type="card")
+    if not card_items:
+        st.info("No saved cards yet. Create card items in the Chart Builder (Card tab).")
         return
 
-    cat_options = {c["title"]: c["id"] for c in catalogs}
-    cat_sel = st.selectbox("Catalog", options=list(cat_options.keys()), key="b_cr_catalog")
-    cat_id = cat_options.get(cat_sel, "")
+    item_options = {f"{it.get('title', it['id'])}": it["id"] for it in card_items}
+    selected_items = st.multiselect(
+        "Card items (select 1-4)",
+        options=list(item_options.keys()),
+        max_selections=4,
+        key="b_cr_items",
+    )
 
-    if cat_id:
-        cat_data = load_catalog(cat_id)
-        card_items = [it for it in (cat_data.get("items", []) if cat_data else []) if it.get("type") == "card"]
-        if not card_items:
-            st.info("No card items in this catalog. Create card items in the Chart Builder (Card tab).")
+    if st.button("Add Card Row Section", key="b_add_cr_section", type="primary"):
+        if not selected_items:
+            st.warning("Select at least one card item.")
             return
-
-        item_options = {f"{it.get('title', it['id'])} ({it.get('series_id','')})": it["id"] for it in card_items}
-        selected_items = st.multiselect(
-            "Card items (select 1–4)",
-            options=list(item_options.keys()),
-            max_selections=4,
-            key="b_cr_items",
-        )
-
-        if st.button("Add Card Row Section", key="b_add_cr_section", type="primary"):
-            if not selected_items:
-                st.warning("Select at least one card item.")
-                return
-            cards_payload = [
-                {"catalog_id": cat_id, "item_id": item_options[label]}
-                for label in selected_items
-            ]
-            new_sec = {
-                "id": _new_section_id(),
-                "type": "card_row",
-                "layout": "full",
-                "cards": cards_payload,
-            }
-            sections.append(new_sec)
-            draft["sections"] = sections
-            st.session_state.builder_draft = draft
-            st.rerun()
+        cards_payload = [
+            {"chart_id": item_options[label]}
+            for label in selected_items
+        ]
+        new_sec = {
+            "id": _new_section_id(),
+            "type": "card_row",
+            "layout": "full",
+            "cards": cards_payload,
+        }
+        sections.append(new_sec)
+        draft["sections"] = sections
+        st.session_state.builder_draft = draft
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +622,11 @@ def _step_preview() -> None:
         st.markdown(f"**Sections ({len(sections)}):**")
         for sec in sections:
             stype = sec.get("type", "chart")
-            if stype == "chart":
+            if stype == "chart" and sec.get("chart_id"):
+                icon = "📊"
+                label = sec.get("title_override") or _resolve_item_title(sec.get("chart_id", ""))
+                detail = f"`{sec.get('layout', 'full')}`"
+            elif stype == "chart":
                 icon = "📊"
                 detail = f"{len(sec.get('series', []))} series"
                 label = sec.get("title", "Untitled")
@@ -655,13 +634,9 @@ def _step_preview() -> None:
                 icon = "📰"
                 detail = sec.get("query", "")
                 label = sec.get("title", "News")
-            elif stype == "catalog_chart":
-                icon = "📊"
-                label = sec.get("title_override") or _resolve_item_title(sec.get("catalog_id", ""), sec.get("item_id", ""))
-                detail = f"`{sec.get('layout', 'full')}`"
             elif stype == "card_row":
                 icon = "🃏"
-                _card_names = [_resolve_item_title(c.get("catalog_id", ""), c.get("item_id", "")) for c in sec.get("cards", [])]
+                _card_names = [_resolve_item_title(c.get("chart_id", "")) for c in sec.get("cards", [])]
                 label = "Cards: " + ", ".join(_card_names) if _card_names else "Card Row (empty)"
                 detail = f"{len(sec.get('cards', []))} card(s)"
             else:
