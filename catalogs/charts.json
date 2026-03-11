@@ -124,9 +124,9 @@
   {
     "type": "card",
     "title": "All Employees, Total Nonfarm",
-    "feed_id": "feed_a445e255",
-    "value_format": ",.1f",
-    "value_suffix": "%",
+    "feed_id": "feed_28805c4a",
+    "value_format": ",.0f",
+    "value_suffix": "K",
     "delta_type": "period",
     "id": "item_805538e4",
     "updated_at": "2026-03-09T21:50:06.834999",

@@ -575,8 +575,9 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
                 _cdf = resolve_feed_data(_card_feed_id)
                 if not _cdf.empty:
                     series = _cdf.iloc[:, 0].dropna()
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Card %s feed fetch failed: %s", card_title, exc)
 
         # Fallback: FRED series_id (old format)
         if series is None or series.empty:

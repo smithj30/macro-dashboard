@@ -7,12 +7,15 @@ instead of manually calling get_provider().fetch_series().
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import pandas as pd
 
 from modules.config.feed_catalog import get_feed
 from providers import get_provider
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_feed_data(
@@ -42,10 +45,16 @@ def resolve_feed_data(
 
     provider_name = feed.get("provider", "")
     series_id = feed.get("series_id", "")
-    params = feed.get("params", {})
+    params = dict(feed.get("params", {}))
 
     if not provider_name:
         return pd.DataFrame()
+
+    # Remove keys that are already passed as explicit arguments to avoid
+    # "got multiple values for argument" TypeError.
+    params.pop("series_id", None)
+    params.pop("start_date", None)
+    params.pop("end_date", None)
 
     try:
         prov = get_provider(provider_name)
@@ -59,4 +68,5 @@ def resolve_feed_data(
             return pd.DataFrame()
         return df
     except Exception:
+        logger.exception("resolve_feed_data failed for %s", feed.get("id", feed_id_or_feed))
         return pd.DataFrame()
