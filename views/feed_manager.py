@@ -124,7 +124,19 @@ def _render_browse():
                     b_name = op_b_feed["name"] if op_b_feed else "?"
                     st.caption(f"= {a_name} {op_sym} {b_name}")
             with cols[1]:
-                st.caption(f"{feed['provider']}: {feed['series_id']}")
+                prov_line = f"{feed['provider']}: {feed['series_id']}"
+                st.caption(prov_line)
+                # Show source/release from provider_metadata or top-level fields
+                _pm = feed.get("provider_metadata", {})
+                _src = feed.get("source") or _pm.get("source", "")
+                _rel = feed.get("release") or _pm.get("release", "")
+                if _src or _rel:
+                    _sr = []
+                    if _src:
+                        _sr.append(f"Source: {_src}")
+                    if _rel:
+                        _sr.append(f"Release: {_rel}")
+                    st.caption(" | ".join(_sr))
             with cols[2]:
                 tags_str = ", ".join(feed.get("tags", []))
                 if tags_str:
@@ -450,6 +462,17 @@ def _render_preview_feed():
         st.metric("Series ID", feed["series_id"])
     with col3:
         st.metric("Frequency", feed.get("frequency", "—"))
+
+    # Source and release info
+    _pm = feed.get("provider_metadata", {})
+    _src = feed.get("source") or _pm.get("source", "")
+    _rel = feed.get("release") or _pm.get("release", "")
+    if _src or _rel:
+        _sr_cols = st.columns(2)
+        with _sr_cols[0]:
+            st.metric("Source", _src or "—")
+        with _sr_cols[1]:
+            st.metric("Release", _rel or "—")
 
     # Load data
     try:

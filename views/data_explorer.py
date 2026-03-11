@@ -22,6 +22,7 @@ from modules.data_ingestion.fred_loader import (
     search_fred,
     load_fred_series,
     get_series_info,
+    get_series_release_source,
 )
 from modules.data_ingestion.file_loader import load_uploaded_file
 from modules.data_ingestion.web_scraper import scrape_table, scrape_tables
@@ -152,7 +153,9 @@ def _render_fred_tab():
         else:
             with st.spinner("Searching FRED..."):
                 try:
-                    results = search_fred(search_query, limit=search_limit)
+                    from providers import get_provider
+                    _fred_prov = get_provider("fred")
+                    results = _fred_prov.search(search_query, limit=search_limit)
                     if results.empty:
                         st.info("No results found.")
                     else:
@@ -173,9 +176,18 @@ def _render_fred_tab():
             title_text = row.get("title", "")
             freq = row.get("frequency_short", row.get("frequency", ""))
             units = row.get("units_short", row.get("units", ""))
+            source = row.get("source", "")
+            release = row.get("release", "")
             label = f"**{sid}** — {title_text}"
             if freq:
                 label += f"  ({freq})"
+            if source or release:
+                sr_parts = []
+                if source:
+                    sr_parts.append(f"Source: {source}")
+                if release:
+                    sr_parts.append(f"Release: {release}")
+                label += f"  \n*{' | '.join(sr_parts)}*"
             checked = st.checkbox(
                 label,
                 value=(st.session_state.get("fred_checked_id") == sid),
@@ -233,6 +245,15 @@ def _render_fred_tab():
                             meta["title"] = info.get("title", "")
                     except Exception:
                         pass
+                    # Enrich with source and release
+                    try:
+                        rs = get_series_release_source(series_id)
+                        if rs.get("source"):
+                            meta["source"] = rs["source"]
+                        if rs.get("release"):
+                            meta["release"] = rs["release"]
+                    except Exception:
+                        pass
                     st.session_state.de_source_meta = meta
                     st.session_state["fred_preview_name"] = name
                 except Exception as e:
@@ -244,6 +265,15 @@ def _render_fred_tab():
         df_prev = st.session_state.catalog[_prev_name]
         if not df_prev.empty:
             st.markdown("---")
+            # Show source and release if available
+            _meta = st.session_state.get("de_source_meta", {})
+            _sr_parts = []
+            if _meta.get("source"):
+                _sr_parts.append(f"**Source:** {_meta['source']}")
+            if _meta.get("release"):
+                _sr_parts.append(f"**Release:** {_meta['release']}")
+            if _sr_parts:
+                st.markdown(" | ".join(_sr_parts))
             fig = time_series_chart(df_prev, title=_prev_name)
             fig = apply_style(fig)
             fig = apply_range_slider(fig, visible=True)
@@ -691,6 +721,12 @@ def _render_save_as_feed(dataset_name: str, df: pd.DataFrame):
                         "operand_b": meta["operand_b"],
                         "operation": meta["operation"],
                     }
+                # Build provider_metadata with source/release if available
+                _pm = {}
+                if meta.get("source"):
+                    _pm["source"] = meta["source"]
+                if meta.get("release"):
+                    _pm["release"] = meta["release"]
                 new_feed = create_feed(
                     name=feed_name.strip(),
                     provider=_saf_provider.strip(),
@@ -699,5 +735,8 @@ def _render_save_as_feed(dataset_name: str, df: pd.DataFrame):
                     units=_saf_units.strip(),
                     tags=tags,
                     params=params,
+                    provider_metadata=_pm if _pm else None,
+                    source=meta.get("source", ""),
+                    release=meta.get("release", ""),
                 )
                 st.success(f"Saved feed: **{feed_name.strip()}** (`{new_feed['id']}`)")

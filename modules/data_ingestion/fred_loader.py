@@ -5,6 +5,7 @@ Loads API key from .env via python-dotenv.
 
 import os
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -96,3 +97,52 @@ def get_series_info(series_id: str) -> dict:
 
     info = client.get_series_info(series_id)
     return info.to_dict() if hasattr(info, "to_dict") else {}
+
+
+def _fred_api_key() -> str:
+    """Return the FRED API key from env."""
+    return os.getenv("FRED_API_KEY", "").strip()
+
+
+def get_series_release_source(series_id: str) -> dict:
+    """
+    Fetch the release name and originating source for a FRED series.
+
+    Uses the FRED REST API directly (fredapi doesn't wrap these endpoints).
+    Returns {"release": "...", "release_id": ..., "source": "..."}.
+    """
+    api_key = _fred_api_key()
+    if not api_key:
+        return {}
+
+    result = {}
+    try:
+        # Step 1: Get the release for this series
+        resp = requests.get(
+            "https://api.stlouisfed.org/fred/series/release",
+            params={"series_id": series_id, "api_key": api_key, "file_type": "json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        releases = resp.json().get("releases", [])
+        if releases:
+            rel = releases[0]
+            result["release"] = rel.get("name", "")
+            release_id = rel.get("id")
+            result["release_id"] = release_id
+
+            # Step 2: Get the source for this release
+            if release_id:
+                resp2 = requests.get(
+                    "https://api.stlouisfed.org/fred/release/sources",
+                    params={"release_id": release_id, "api_key": api_key, "file_type": "json"},
+                    timeout=10,
+                )
+                resp2.raise_for_status()
+                sources = resp2.json().get("sources", [])
+                if sources:
+                    result["source"] = sources[0].get("name", "")
+    except Exception:
+        pass
+
+    return result
