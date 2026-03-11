@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Feed Refresh Script — can be run via cron or manually.
+Feed Refresh Script — standalone CLI, no Streamlit dependency.
 
 Usage:
-    python scripts/refresh.py              # refresh all feeds due for update
-    python scripts/refresh.py --all        # refresh all feeds regardless
+    python scripts/refresh.py              # refresh all stale feeds
+    python scripts/refresh.py --force      # refresh all non-manual feeds
+    python scripts/refresh.py --dry-run    # report what would refresh
+    python scripts/refresh.py --provider X # only feeds from provider X
     python scripts/refresh.py --feed ID    # refresh a specific feed
-    python scripts/refresh.py --provider X # refresh all feeds from provider X
 
-The script loads feed definitions from catalogs/feeds.json, fetches fresh
-data via the appropriate provider, caches it to disk, and logs results
-to data/refresh_log.json.
+Staleness rules:
+    daily   — stale if last_refreshed is null or >20 hours ago
+    weekly  — stale if null or >6 days ago
+    monthly — stale if null or >25 days ago
+    manual  — never auto-refreshed
 """
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -67,21 +69,19 @@ def get_refresh_log(limit: int = 50) -> list:
 # ---------------------------------------------------------------------------
 
 _SCHEDULE_DELTAS = {
-    "daily": timedelta(days=1),
-    "weekly": timedelta(weeks=1),
-    "monthly": timedelta(days=28),
+    "daily": timedelta(hours=20),
+    "weekly": timedelta(days=6),
+    "monthly": timedelta(days=25),
 }
 
 
-def _is_due(feed: dict) -> bool:
-    """Check if a feed is due for refresh based on its schedule."""
+def _is_stale(feed: dict) -> bool:
+    """Check if a feed is stale based on its refresh_schedule and last_refreshed."""
     schedule = feed.get("refresh_schedule", "daily")
     if schedule == "manual":
         return False
 
-    # Re-read from disk to get current last_refreshed
-    fresh = get_feed(feed["id"])
-    last_refreshed = (fresh or feed).get("last_refreshed")
+    last_refreshed = feed.get("last_refreshed")
     if not last_refreshed:
         return True
 
@@ -90,7 +90,7 @@ def _is_due(feed: dict) -> bool:
     except (ValueError, TypeError):
         return True
 
-    delta = _SCHEDULE_DELTAS.get(schedule, timedelta(days=1))
+    delta = _SCHEDULE_DELTAS.get(schedule, timedelta(hours=20))
     return datetime.now() - last_dt > delta
 
 
@@ -102,30 +102,24 @@ _CACHE_DIR = PROJECT_ROOT / "data" / "cache"
 
 
 def _cache_feed_data(feed: dict, df) -> str:
-    """Cache feed data to disk. Returns the cache path."""
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"{feed['provider']}_{feed['series_id'].replace('/', '_')}"
-
-    # Try Parquet first, fall back to CSV
-    try:
-        path = _CACHE_DIR / f"{filename}.parquet"
-        df.to_parquet(path)
-        return str(path)
-    except Exception:
-        path = _CACHE_DIR / f"{filename}.csv"
-        df.to_csv(path)
-        return str(path)
+    """Save DataFrame as parquet to data/cache/{provider}/{feed_id}.parquet."""
+    provider_dir = _CACHE_DIR / feed["provider"]
+    provider_dir.mkdir(parents=True, exist_ok=True)
+    path = provider_dir / f"{feed['id']}.parquet"
+    df.to_parquet(path)
+    return str(path)
 
 
 # ---------------------------------------------------------------------------
 # Refresh execution
 # ---------------------------------------------------------------------------
 
-def refresh_feed(feed: dict, force: bool = False) -> dict:
+def refresh_feed(feed: dict, force: bool = False, dry_run: bool = False) -> dict:
     """
     Refresh a single feed. Returns a result dict.
     """
     feed_id = feed["id"]
+    stale = _is_stale(feed)
     result = {
         "feed_id": feed_id,
         "feed_name": feed["name"],
@@ -133,18 +127,34 @@ def refresh_feed(feed: dict, force: bool = False) -> dict:
         "series_id": feed["series_id"],
         "timestamp": datetime.now().isoformat(),
         "success": False,
+        "skipped": False,
         "error": None,
         "rows": 0,
         "cache_path": None,
     }
 
-    if not force and not _is_due(feed):
-        result["error"] = "not_due"
+    # Skip manual feeds unless forced with --feed (handled by caller)
+    if feed.get("refresh_schedule") == "manual" and not force:
+        result["skipped"] = True
+        result["error"] = "manual_schedule"
+        return result
+
+    # Skip non-stale feeds unless forced
+    if not stale and not force:
+        result["skipped"] = True
+        result["error"] = "not_stale"
+        return result
+
+    if dry_run:
+        result["error"] = "dry_run"
         return result
 
     try:
-        from services.data_resolver import resolve_feed_data
-        df = resolve_feed_data(feed)
+        provider = get_provider(feed["provider"])
+        params = feed.get("params", {})
+        # Remove series_id from params if present — it's passed as first arg
+        params_copy = {k: v for k, v in params.items() if k != "series_id"}
+        df = provider.fetch_series(feed["series_id"], **params_copy)
 
         if df is not None and not df.empty:
             cache_path = _cache_feed_data(feed, df)
@@ -162,15 +172,29 @@ def refresh_feed(feed: dict, force: bool = False) -> dict:
     return result
 
 
-def refresh_all(force: bool = False, provider_filter: str = None) -> list:
-    """Refresh all feeds (or all from a specific provider). Returns list of results."""
+def refresh_all(
+    force: bool = False,
+    dry_run: bool = False,
+    provider_filter: str = None,
+) -> list:
+    """Refresh all feeds (or filtered by provider). Returns list of results."""
     feeds = list_feeds(provider=provider_filter)
     results = []
     for feed in feeds:
-        result = refresh_feed(feed, force=force)
+        result = refresh_feed(feed, force=force, dry_run=dry_run)
         results.append(result)
-        status = "OK" if result["success"] else result.get("error", "failed")
-        print(f"  {feed['name']} ({feed['provider']}:{feed['series_id']}): {status}")
+
+        # Print per-feed status
+        if result["skipped"]:
+            reason = result.get("error", "skipped")
+            print(f"  SKIP  {feed['name']} [{feed['provider']}] — {reason}")
+        elif result.get("error") == "dry_run":
+            print(f"  WOULD {feed['name']} [{feed['provider']}]")
+        elif result["success"]:
+            print(f"  OK    {feed['name']} [{feed['provider']}] — {result['rows']} rows")
+        else:
+            print(f"  FAIL  {feed['name']} [{feed['provider']}] — {result['error']}")
+
     return results
 
 
@@ -180,12 +204,27 @@ def refresh_all(force: bool = False, provider_filter: str = None) -> list:
 
 def main():
     parser = argparse.ArgumentParser(description="Refresh data feeds")
-    parser.add_argument("--all", action="store_true", help="Refresh all feeds regardless of schedule")
-    parser.add_argument("--feed", type=str, help="Refresh a specific feed by ID")
-    parser.add_argument("--provider", type=str, help="Refresh all feeds from a specific provider")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would refresh without doing it",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Refresh all non-manual feeds regardless of staleness",
+    )
+    parser.add_argument(
+        "--provider", type=str,
+        help="Only refresh feeds from this provider",
+    )
+    parser.add_argument(
+        "--feed", type=str,
+        help="Refresh a specific feed by ID",
+    )
     args = parser.parse_args()
 
-    print(f"Feed refresh started at {datetime.now().isoformat()}")
+    print(f"Feed refresh — {datetime.now().isoformat()}")
+    if args.dry_run:
+        print("(DRY RUN — no data will be fetched or saved)")
     print("-" * 60)
 
     if args.feed:
@@ -193,16 +232,42 @@ def main():
         if not feed:
             print(f"Feed not found: {args.feed}")
             sys.exit(1)
-        result = refresh_feed(feed, force=True)
-        status = "OK" if result["success"] else result.get("error", "failed")
-        print(f"  {feed['name']}: {status}")
+        result = refresh_feed(feed, force=True, dry_run=args.dry_run)
+        if result.get("error") == "dry_run":
+            print(f"  WOULD {feed['name']} [{feed['provider']}]")
+        elif result["success"]:
+            print(f"  OK    {feed['name']} — {result['rows']} rows")
+        else:
+            print(f"  FAIL  {feed['name']} — {result['error']}")
+        results = [result]
     else:
-        results = refresh_all(force=args.all, provider_filter=args.provider)
-        ok = sum(1 for r in results if r["success"])
-        skipped = sum(1 for r in results if r.get("error") == "not_due")
-        failed = sum(1 for r in results if not r["success"] and r.get("error") != "not_due")
-        print("-" * 60)
-        print(f"Done: {ok} refreshed, {skipped} skipped (not due), {failed} failed")
+        results = refresh_all(
+            force=args.force, dry_run=args.dry_run, provider_filter=args.provider,
+        )
+
+    # Summary
+    checked = len(results)
+    refreshed = sum(1 for r in results if r["success"])
+    skipped = sum(1 for r in results if r.get("skipped"))
+    dry = sum(1 for r in results if r.get("error") == "dry_run")
+    failures = [r for r in results if not r["success"] and not r.get("skipped") and r.get("error") != "dry_run"]
+
+    print("-" * 60)
+    parts = [f"{checked} checked"]
+    if refreshed:
+        parts.append(f"{refreshed} refreshed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    if dry:
+        parts.append(f"{dry} would refresh")
+    if failures:
+        parts.append(f"{len(failures)} failed")
+    print(f"Summary: {', '.join(parts)}")
+
+    if failures:
+        print("\nFailures:")
+        for r in failures:
+            print(f"  - {r['feed_name']} ({r['provider']}:{r['series_id']}): {r['error']}")
 
 
 if __name__ == "__main__":
