@@ -143,9 +143,8 @@ def refresh_feed(feed: dict, force: bool = False) -> dict:
         return result
 
     try:
-        provider = get_provider(feed["provider"])
-        kwargs = feed.get("kwargs", {})
-        df = provider.fetch_series(feed["series_id"], **kwargs)
+        from services.data_resolver import resolve_feed_data
+        df = resolve_feed_data(feed)
 
         if df is not None and not df.empty:
             cache_path = _cache_feed_data(feed, df)

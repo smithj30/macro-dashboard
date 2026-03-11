@@ -49,8 +49,7 @@ class ComputedProvider(BaseProvider):
             operand_b : feed_id for the second operand
             operation : one of div, sub, add, mul, pct_diff
         """
-        from modules.config.feed_catalog import get_feed
-        from providers import get_provider
+        from services.data_resolver import resolve_feed_data
 
         operand_a = kwargs.get("operand_a")
         operand_b = kwargs.get("operand_b")
@@ -62,29 +61,13 @@ class ComputedProvider(BaseProvider):
         if operation not in OPERATIONS:
             raise ValueError(f"Unknown operation {operation!r}. Supported: {list(OPERATIONS)}")
 
-        # Load operand A
-        feed_a = get_feed(operand_a)
-        if not feed_a:
-            raise ValueError(f"Operand A feed not found: {operand_a}")
-        prov_a = get_provider(feed_a["provider"])
-        df_a = prov_a.fetch_series(
-            feed_a.get("series_id", ""),
-            start_date=start_date,
-            end_date=end_date,
-            **feed_a.get("params", {}),
-        )
+        df_a = resolve_feed_data(operand_a, start_date=start_date, end_date=end_date)
+        if df_a.empty:
+            raise ValueError(f"Operand A feed returned no data: {operand_a}")
 
-        # Load operand B
-        feed_b = get_feed(operand_b)
-        if not feed_b:
-            raise ValueError(f"Operand B feed not found: {operand_b}")
-        prov_b = get_provider(feed_b["provider"])
-        df_b = prov_b.fetch_series(
-            feed_b.get("series_id", ""),
-            start_date=start_date,
-            end_date=end_date,
-            **feed_b.get("params", {}),
-        )
+        df_b = resolve_feed_data(operand_b, start_date=start_date, end_date=end_date)
+        if df_b.empty:
+            raise ValueError(f"Operand B feed returned no data: {operand_b}")
 
         # Get first numeric column from each
         sa = df_a.select_dtypes(include="number").iloc[:, 0]

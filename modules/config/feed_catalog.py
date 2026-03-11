@@ -1,32 +1,30 @@
 """
 Data Feed catalog storage layer.
 
-Feeds are the core abstraction in v2 — a named, tagged, refreshable reference
-to a data series from any provider. Instead of embedding series IDs directly
-in chart configs, charts reference feed_ids from this catalog.
+Feeds are the core abstraction — a named, tagged, refreshable reference
+to a data series from any provider. Charts reference feed_ids from this catalog.
 
 Storage: catalogs/feeds.json — a flat list of feed objects.
 
-Feed schema (v2):
+Feed schema:
 {
     "id": "feed_<8hex>",
     "name": "Unemployment Rate",
     "provider": "fred",              # key in PROVIDERS registry
-    "series_id": "UNRATE",           # provider-specific identifier (kept for compat)
-    "description": "Civilian ...",   # optional human description
-    "source": "U.S. Bureau of ...",  # originating agency (auto-filled for FRED)
-    "release": "Employment ...",     # statistical release name (auto-filled for FRED)
+    "series_id": "UNRATE",           # provider-specific identifier
+    "description": "",               # optional human description
+    "source": "",                    # originating agency
+    "release": "",                   # statistical release name
     "frequency": "Monthly",
     "units": "Percent",
     "dimensions": {},                # optional: geography, segment, etc.
-    "params": {},                    # provider-specific params (consolidates series_id + kwargs)
+    "params": {},                    # provider-specific params passed to fetch_series()
     "tags": ["labor"],
     "refresh_schedule": "daily",     # daily / weekly / monthly / manual
     "provider_metadata": {},         # cached metadata from provider
     "created_at": "...",
     "updated_at": "...",
-    "last_refreshed": null,
-    "kwargs": {}                     # legacy — use params for new feeds
+    "last_refreshed": null
 }
 """
 
@@ -115,7 +113,6 @@ def create_feed(
     tags: Optional[List[str]] = None,
     refresh_schedule: str = "daily",
     provider_metadata: Optional[Dict[str, Any]] = None,
-    kwargs: Optional[Dict[str, Any]] = None,
     description: str = "",
     source: str = "",
     release: str = "",
@@ -136,14 +133,13 @@ def create_feed(
         "frequency": frequency,
         "units": units,
         "dimensions": dimensions or {},
-        "params": params or {"series_id": series_id},
+        "params": params or {},
         "tags": tags or [],
         "refresh_schedule": refresh_schedule,
         "provider_metadata": provider_metadata or {},
         "created_at": now,
         "updated_at": now,
         "last_refreshed": None,
-        "kwargs": kwargs or {},
     }
     feeds.append(feed)
     _save_all(feeds)
@@ -212,14 +208,13 @@ def bulk_create_feeds(
             "frequency": defn.get("frequency", ""),
             "units": defn.get("units", ""),
             "dimensions": defn.get("dimensions", {}),
-            "params": defn.get("params", {"series_id": defn["series_id"]}),
+            "params": defn.get("params", {}),
             "tags": defn.get("tags", []),
             "refresh_schedule": defn.get("refresh_schedule", "daily"),
             "provider_metadata": defn.get("provider_metadata", {}),
             "created_at": now,
             "updated_at": now,
             "last_refreshed": None,
-            "kwargs": defn.get("kwargs", {}),
         }
         feeds.append(feed)
         existing_keys.add(key)  # prevent duplicates within the same batch
@@ -238,23 +233,3 @@ def feed_count() -> int:
     return len(_load_all())
 
 
-def get_feed_series_id(feed: Dict[str, Any]) -> str:
-    """
-    Get the effective series_id from a feed dict.
-    Checks params.series_id first, then falls back to top-level series_id.
-    """
-    params = feed.get("params", {})
-    return params.get("series_id", feed.get("series_id", ""))
-
-
-def get_feed_params(feed: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Get the effective provider params from a feed dict.
-    Merges params with legacy kwargs for backward compatibility.
-    """
-    params = dict(feed.get("params", {}))
-    # Fall back to series_id + kwargs if params is empty
-    if not params:
-        params["series_id"] = feed.get("series_id", "")
-        params.update(feed.get("kwargs", {}))
-    return params

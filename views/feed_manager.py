@@ -453,9 +453,8 @@ def _render_preview_feed():
 
     # Load data
     try:
-        provider = get_provider(feed["provider"])
-        kwargs = feed.get("kwargs", {})
-        df = provider.fetch_series(feed["series_id"], **kwargs)
+        from services.data_resolver import resolve_feed_data
+        df = resolve_feed_data(feed)
 
         if df.empty:
             st.warning("No data returned.")

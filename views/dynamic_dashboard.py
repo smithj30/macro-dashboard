@@ -15,7 +15,6 @@ import streamlit as st
 
 from modules.config.dashboard_config import save_config
 from modules.config.chart_catalog import get_item as catalog_get_item
-from modules.config.feed_catalog import get_feed
 from modules.data_ingestion.fred_loader import load_fred_series
 from modules.data_processing.transforms import (
     month_over_month,
@@ -72,24 +71,19 @@ def _load_card_fred(series_id: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _load_series_feed(
-    provider_name: str, series_id: str, feed_kwargs_json: str, years_back: int, transform: str
+    feed_id: str, years_back: int, transform: str
 ) -> pd.DataFrame:
-    """Load a registered feed series via provider and apply transform."""
-    import json
-    from providers import get_provider as _gp
+    """Load a registered feed series via the data resolver and apply transform."""
+    from services.data_resolver import resolve_feed_data
 
     try:
-        provider = _gp(provider_name)
-        kwargs = json.loads(feed_kwargs_json) if feed_kwargs_json and feed_kwargs_json != "{}" else {}
-        df = provider.fetch_series(series_id, **kwargs)
+        df = resolve_feed_data(feed_id)
         if df is None or df.empty:
             return pd.DataFrame()
         series = df.iloc[:, 0]
-        # Apply time window filter
         if years_back and isinstance(df.index, pd.DatetimeIndex):
             cutoff = datetime.today() - timedelta(days=years_back * 365)
             series = series[series.index >= cutoff]
-        # Apply transform
         if transform == "yoy":
             series = year_over_year(series)
         elif transform == "mom":
@@ -426,25 +420,17 @@ def _render_catalog_chart_section(
                     load_errors.append(f"{label}: session-only data unavailable (no column name stored)")
 
             elif source == "feed":
-                import json
                 feed_id = sdef.get("feed_id", "")
                 if feed_id:
-                    feed = get_feed(feed_id)
-                    if feed:
-                        kwargs_json = json.dumps(feed.get("kwargs", {}))
-                        df = _load_series_feed(
-                            feed["provider"], feed["series_id"], kwargs_json, years_back, transform
-                        )
-                        if not df.empty:
-                            s = df.iloc[:, 0].rename(label)
-                            raw_data[label] = s
-                            frames.append(s.to_frame())
-                            if axis == 2:
-                                dual_axis_col = label
-                        else:
-                            load_errors.append(f"{label}: no data from feed '{feed.get('name', feed_id)}'")
+                    df = _load_series_feed(feed_id, years_back, transform)
+                    if not df.empty:
+                        s = df.iloc[:, 0].rename(label)
+                        raw_data[label] = s
+                        frames.append(s.to_frame())
+                        if axis == 2:
+                            dual_axis_col = label
                     else:
-                        load_errors.append(f"{label}: feed '{feed_id}' not found in catalog")
+                        load_errors.append(f"{label}: no data from feed '{feed_id}'")
                 else:
                     load_errors.append(f"{label}: no feed_id configured")
 
@@ -581,37 +567,18 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
         # ── Resolve data series ──────────────────────────────────────────────
         series: Optional[pd.Series] = None
 
-        # Primary path: feed_id (new format)
+        # Resolve card data via feed_id
         _card_feed_id = item.get("feed_id", "")
         if _card_feed_id:
             try:
-                from modules.config.feed_catalog import get_feed as _card_get_feed
-                from providers import get_provider as _card_get_prov
-                _card_feed = _card_get_feed(_card_feed_id)
-                if _card_feed:
-                    _cprov = _card_get_prov(_card_feed["provider"])
-                    _cdf = _cprov.fetch_series(_card_feed["series_id"], **_card_feed.get("kwargs", {}))
-                    if _cdf is not None and not _cdf.empty:
-                        series = _cdf.iloc[:, 0].dropna()
+                from services.data_resolver import resolve_feed_data
+                _cdf = resolve_feed_data(_card_feed_id)
+                if not _cdf.empty:
+                    series = _cdf.iloc[:, 0].dropna()
             except Exception:
                 pass
 
-        # Fallback: dataset_name + column from session catalog (legacy)
-        if series is None or series.empty:
-            dataset_name = item.get("dataset_name", "")
-            column = item.get("column", "")
-            if dataset_name and column:
-                session_cat = st.session_state.get("catalog", {})
-                df_cat = session_cat.get(dataset_name)
-                if df_cat is not None and column in df_cat.columns:
-                    series = df_cat[column].dropna()
-                    if not isinstance(series.index, pd.DatetimeIndex):
-                        try:
-                            series.index = pd.to_datetime(series.index)
-                        except Exception:
-                            pass
-
-        # Fallback: FRED series_id (old format or explicit fred_series_id)
+        # Fallback: FRED series_id (old format)
         if series is None or series.empty:
             fred_id = item.get("fred_series_id") or item.get("series_id") or ""
             if fred_id:
