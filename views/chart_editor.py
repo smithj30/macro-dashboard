@@ -3,6 +3,10 @@ Chart Builder — extracted from app.py.
 
 Provides:
     render_chart_builder()   — the Chart Builder tool page
+
+Two modes:
+    - Explorer (default): filterable list of all saved charts/cards
+    - Edit: the chart/card builder form (create or edit)
 """
 
 import streamlit as st
@@ -15,7 +19,9 @@ from modules.config.chart_config import (
     upsert_item,
     delete_item as delete_chart_item,
 )
+from modules.config.dashboard_config import list_dynamic_dashboards, load_config as load_dashboard_config, save_config as save_dashboard_config
 from components.feed_picker import feed_picker
+from components.tag_picker import tag_picker, tag_display
 
 from modules.data_ingestion.fred_loader import load_fred_series
 
@@ -58,6 +64,11 @@ def get_merged_df(selected_datasets: list[str]) -> pd.DataFrame:
 
 def _init_state():
     """Initialise all cb_* and cc_* session state variables."""
+    if "cb_mode" not in st.session_state:
+        st.session_state.cb_mode = "explore"   # explore | edit
+    if "cb_edit_id" not in st.session_state:
+        st.session_state.cb_edit_id = None      # item_id when editing existing
+
     if "cb_recent_fred" not in st.session_state:
         st.session_state.cb_recent_fred = []   # list[{id, title}], max 10
 
@@ -86,6 +97,12 @@ def _init_state():
     # Chart Catalogs — delete confirmation state
     if "cc_pending_delete_item" not in st.session_state:
         st.session_state.cc_pending_delete_item = None  # item_id awaiting confirmation
+
+    # Explorer multi-select state
+    if "ce_selected_ids" not in st.session_state:
+        st.session_state.ce_selected_ids = set()
+    if "ce_bulk_action" not in st.session_state:
+        st.session_state.ce_bulk_action = None  # None | "dashboard" | "add_to_dash" | "tag" | "delete"
 
 
 # ── Helper: reload data for all series source types ──────────────────────────
@@ -176,14 +193,380 @@ def _load_chart_series_data(series_list):
 
 
 # =============================================================================
-# render_chart_builder
+# Dashboard reference scanner
+# =============================================================================
+
+def _compute_dashboard_refs() -> dict[str, list[str]]:
+    """Scan all dashboards and return {chart_id: [dashboard_title, ...]}."""
+    refs: dict[str, list[str]] = {}
+    for dash in list_dynamic_dashboards():
+        dash_title = dash.get("title", dash.get("id", "Untitled"))
+        for sec in dash.get("sections", []):
+            # Direct chart_id on section
+            cid = sec.get("chart_id")
+            if cid:
+                refs.setdefault(cid, []).append(dash_title)
+            # card_row cards
+            for card in sec.get("cards", []):
+                cid = card.get("chart_id")
+                if cid:
+                    refs.setdefault(cid, []).append(dash_title)
+    # Deduplicate per chart
+    return {k: sorted(set(v)) for k, v in refs.items()}
+
+
+# =============================================================================
+# MODE 1: Chart Explorer
+# =============================================================================
+
+def _layout_for_count(n: int) -> str:
+    """Return default dashboard layout based on number of charts."""
+    if n <= 2:
+        return "full"
+    elif n <= 4:
+        return "half"
+    elif n <= 6:
+        return "third"
+    return "quarter"
+
+
+def _clear_selection():
+    """Clear all checkbox keys and the selected_ids set."""
+    for key in list(st.session_state.keys()):
+        if key.startswith("ce_chk_"):
+            st.session_state[key] = False
+    st.session_state.ce_selected_ids = set()
+
+
+def _render_bulk_action_bar(selected_ids: set, all_items: list, dash_refs: dict):
+    """Render the bulk action bar when charts are selected."""
+    import uuid as _uuid
+
+    sel_count = len(selected_ids)
+    sel_items = [i for i in all_items if i["id"] in selected_ids]
+    sel_names = [i.get("title", i["id"]) for i in sel_items]
+
+    st.markdown(f"**{sel_count} chart(s) selected**")
+
+    action_cols = st.columns([1, 1, 1, 1])
+    with action_cols[0]:
+        if st.button("Create Dashboard", key="ce_bulk_create_dash", use_container_width=True):
+            st.session_state.ce_bulk_action = "dashboard"
+            st.rerun()
+    with action_cols[1]:
+        if st.button("Add to Dashboard", key="ce_bulk_add_dash", use_container_width=True):
+            st.session_state.ce_bulk_action = "add_to_dash"
+            st.rerun()
+    with action_cols[2]:
+        if st.button("Bulk Tag", key="ce_bulk_tag_btn", use_container_width=True):
+            st.session_state.ce_bulk_action = "tag"
+            st.rerun()
+    with action_cols[3]:
+        if st.button("Bulk Delete", key="ce_bulk_delete_btn", use_container_width=True):
+            st.session_state.ce_bulk_action = "delete"
+            st.rerun()
+
+    # ── Expanded action panels ────────────────────────────────────────────
+    bulk_action = st.session_state.ce_bulk_action
+
+    if bulk_action == "dashboard":
+        # Create Dashboard from Selected
+        st.session_state.builder_prefill_charts = list(selected_ids)
+        _clear_selection()
+        st.session_state.ce_bulk_action = None
+        st.session_state.page = "Dashboard Builder"
+        st.rerun()
+
+    elif bulk_action == "add_to_dash":
+        dashboards = list_dynamic_dashboards()
+        if not dashboards:
+            st.warning("No existing dashboards found. Use **Create Dashboard** instead.")
+            if st.button("Cancel", key="ce_add_dash_cancel"):
+                st.session_state.ce_bulk_action = None
+                st.rerun()
+        else:
+            dash_options = {d.get("title", d["id"]): d["id"] for d in dashboards}
+            _sel_dash = st.selectbox(
+                "Select dashboard",
+                options=list(dash_options.keys()),
+                key="ce_add_dash_sel",
+            )
+            _add_col1, _add_col2 = st.columns(2)
+            with _add_col1:
+                if st.button("Add Charts", key="ce_add_dash_confirm", type="primary", use_container_width=True):
+                    dash_id = dash_options[_sel_dash]
+                    dash_cfg = load_dashboard_config(dash_id)
+                    if dash_cfg:
+                        layout = _layout_for_count(sel_count)
+                        for cid in selected_ids:
+                            item = get_chart_item(cid)
+                            sec_type = "card_row" if item and item.get("type") == "card" else "chart"
+                            if sec_type == "card_row":
+                                dash_cfg.setdefault("sections", []).append({
+                                    "id": f"sec_{_uuid.uuid4().hex[:8]}",
+                                    "type": "card_row",
+                                    "layout": "full",
+                                    "cards": [{"chart_id": cid}],
+                                })
+                            else:
+                                dash_cfg.setdefault("sections", []).append({
+                                    "id": f"sec_{_uuid.uuid4().hex[:8]}",
+                                    "type": "chart",
+                                    "layout": layout,
+                                    "chart_id": cid,
+                                })
+                        save_dashboard_config(dash_cfg)
+                        st.session_state.ce_selected_ids = set()
+                        st.session_state.ce_bulk_action = None
+                        st.toast(f"Added {sel_count} chart(s) to {_sel_dash}")
+                        st.rerun()
+            with _add_col2:
+                if st.button("Cancel", key="ce_add_dash_cancel2", use_container_width=True):
+                    st.session_state.ce_bulk_action = None
+                    st.rerun()
+
+    elif bulk_action == "tag":
+        _bulk_tags = tag_picker(
+            label="Tags to add",
+            key="ce_bulk_tag_picker",
+            allow_create=False,
+        )
+        _tag_col1, _tag_col2 = st.columns(2)
+        with _tag_col1:
+            if st.button("Apply Tags", key="ce_bulk_tag_apply", type="primary", use_container_width=True):
+                if _bulk_tags:
+                    for item in sel_items:
+                        existing_tags = set(item.get("tags", []))
+                        merged = sorted(existing_tags | set(_bulk_tags))
+                        upsert_item({"id": item["id"], "tags": merged})
+                    _clear_selection()
+                    st.session_state.ce_bulk_action = None
+                    st.toast(f"Tagged {sel_count} chart(s)")
+                    st.rerun()
+                else:
+                    st.warning("Select at least one tag to apply.")
+        with _tag_col2:
+            if st.button("Cancel", key="ce_bulk_tag_cancel", use_container_width=True):
+                st.session_state.ce_bulk_action = None
+                st.rerun()
+
+    elif bulk_action == "delete":
+        st.warning(f"Delete **{sel_count}** chart(s)?")
+        for _sn in sel_names:
+            _sid = sel_items[sel_names.index(_sn)]["id"]
+            _srefs = dash_refs.get(_sid, [])
+            if _srefs:
+                st.markdown(f"- **{_sn}** — referenced by: {', '.join(_srefs)}")
+            else:
+                st.markdown(f"- {_sn}")
+        _del_col1, _del_col2 = st.columns(2)
+        with _del_col1:
+            if st.button("Confirm Delete", key="ce_bulk_del_confirm", type="primary", use_container_width=True):
+                for cid in selected_ids:
+                    delete_chart_item(cid)
+                st.session_state.ce_selected_ids = set()
+                st.session_state.ce_bulk_action = None
+                st.toast(f"Deleted {sel_count} chart(s)")
+                st.rerun()
+        with _del_col2:
+            if st.button("Cancel", key="ce_bulk_del_cancel", use_container_width=True):
+                st.session_state.ce_bulk_action = None
+                st.rerun()
+
+    st.markdown("---")
+
+
+def _render_chart_explorer():
+    """Filterable list of all saved charts/cards with dashboard refs."""
+    st.title("Chart Builder")
+
+    # ── Action bar ────────────────────────────────────────────────────────
+    _ab_col1, _ab_col2 = st.columns([4, 1])
+    with _ab_col2:
+        if st.button("+ New Chart", key="ce_new_chart", type="primary", use_container_width=True):
+            st.session_state.cb_mode = "edit"
+            st.session_state.cb_edit_id = None
+            st.session_state.cb_item_id = None
+            st.session_state.cb_series = []
+            st.session_state.cb_data = {}
+            st.session_state.cb_card_feed_id = None
+            st.session_state.cb_card_title = ""
+            st.session_state.cb_card_delta_type = "none"
+            st.rerun()
+
+    # ── Load data ─────────────────────────────────────────────────────────
+    all_items = list_chart_items()
+    dash_refs = _compute_dashboard_refs()
+
+    if not all_items:
+        st.info("No saved charts or cards yet. Click **+ New Chart** to create one.")
+        return
+
+    # ── Sync selected_ids from checkbox widget keys ─────────────────────
+    # When a bulk action is pending, skip re-syncing from checkboxes
+    # (the action panel needs the stored selection to operate on).
+    if not st.session_state.ce_bulk_action:
+        _synced = set()
+        for _item in all_items:
+            _chk_key = f"ce_chk_{_item['id']}"
+            if st.session_state.get(_chk_key, False):
+                _synced.add(_item["id"])
+        st.session_state.ce_selected_ids = _synced
+    selected_ids = st.session_state.ce_selected_ids
+
+    # ── Bulk action bar (when items selected) ─────────────────────────────
+    if selected_ids or st.session_state.ce_bulk_action:
+        _render_bulk_action_bar(selected_ids, all_items, dash_refs)
+
+    # ── Filters ───────────────────────────────────────────────────────────
+    _f_col1, _f_col2, _f_col3 = st.columns([3, 2, 1])
+    with _f_col1:
+        _search = st.text_input(
+            "Search",
+            key="ce_search",
+            placeholder="Filter by title...",
+            label_visibility="collapsed",
+        )
+    with _f_col2:
+        # Collect all tags across items
+        _all_tags = sorted({t for item in all_items for t in item.get("tags", [])})
+        _tag_filter = st.multiselect("Tags", options=_all_tags, key="ce_tag_filter", label_visibility="collapsed", placeholder="Filter by tag...")
+    with _f_col3:
+        _type_filter = st.selectbox("Type", ["All", "Charts", "Cards"], key="ce_type_filter", label_visibility="collapsed")
+
+    # Apply filters
+    filtered = all_items
+    if _search:
+        _search_lower = _search.lower()
+        filtered = [i for i in filtered if _search_lower in i.get("title", "").lower()]
+    if _tag_filter:
+        _tf_set = set(t.lower() for t in _tag_filter)
+        filtered = [i for i in filtered if _tf_set & set(t.lower() for t in i.get("tags", []))]
+    if _type_filter == "Charts":
+        filtered = [i for i in filtered if i.get("type") == "chart"]
+    elif _type_filter == "Cards":
+        filtered = [i for i in filtered if i.get("type") == "card"]
+
+    filtered_ids = {i["id"] for i in filtered}
+
+    # ── Select All / Deselect All toggle ──────────────────────────────────
+    _sel_col1, _sel_col2, _sel_col3 = st.columns([1, 1, 4])
+    with _sel_col1:
+        if st.button("Select All", key="ce_select_all", use_container_width=True):
+            for _fid in filtered_ids:
+                st.session_state[f"ce_chk_{_fid}"] = True
+            st.session_state.ce_selected_ids = st.session_state.ce_selected_ids | filtered_ids
+            st.rerun()
+    with _sel_col2:
+        if st.button("Deselect All", key="ce_deselect_all", use_container_width=True):
+            for _fid in filtered_ids:
+                st.session_state[f"ce_chk_{_fid}"] = False
+            st.session_state.ce_selected_ids = st.session_state.ce_selected_ids - filtered_ids
+            st.rerun()
+    with _sel_col3:
+        st.caption(f"{len(filtered)} of {len(all_items)} item(s)")
+
+    # ── Item list ─────────────────────────────────────────────────────────
+    for _ci in filtered:
+        _ci_id = _ci["id"]
+        _ci_type = _ci.get("type", "chart")
+        _ci_icon = "📊" if _ci_type == "chart" else "🔢"
+        _ci_title = _ci.get("title", _ci_id)
+        _ci_tags = _ci.get("tags", [])
+        _ci_refs = dash_refs.get(_ci_id, [])
+
+        _row_chk, _row_col1, _row_col2, _row_col3 = st.columns([0.5, 4.5, 1, 1])
+
+        with _row_chk:
+            _is_checked = st.checkbox(
+                "sel",
+                value=(_ci_id in selected_ids),
+                key=f"ce_chk_{_ci_id}",
+                label_visibility="collapsed",
+            )
+            # Sync checkbox state with selected_ids (no rerun — synced live)
+            if _is_checked:
+                st.session_state.ce_selected_ids.add(_ci_id)
+            else:
+                st.session_state.ce_selected_ids.discard(_ci_id)
+
+        with _row_col1:
+            # Title + type badge
+            st.markdown(f"**{_ci_icon} {_ci_title}**  `{_ci_type}`")
+            # Tags as colored pills
+            if _ci_tags:
+                tag_display(_ci_tags, key_prefix=f"ce_td_{_ci_id}")
+            # Dashboard refs or orphan badge
+            if _ci_refs:
+                _ref_str = ", ".join(_ci_refs)
+                st.caption(f"Used in: {_ref_str}")
+            else:
+                st.markdown(
+                    '<span style="background-color: #ff990022; color: #ff9900; '
+                    'border: 1px solid #ff990044; padding: 2px 8px; border-radius: 12px; '
+                    'font-size: 0.8em;">Orphan</span>',
+                    unsafe_allow_html=True,
+                )
+
+        with _row_col2:
+            if st.button("Edit", key=f"ce_edit_{_ci_id}", use_container_width=True):
+                st.session_state.cb_mode = "edit"
+                st.session_state.cb_edit_id = _ci_id
+                st.session_state.cb_edit_request = {"item_id": _ci_id}
+                st.rerun()
+
+        with _row_col3:
+            if st.session_state.cc_pending_delete_item == _ci_id:
+                # Confirmation step
+                if _ci_refs:
+                    st.warning(f"Referenced by: {', '.join(_ci_refs)}")
+                if st.button("Confirm", key=f"ce_del_confirm_{_ci_id}", type="primary", use_container_width=True):
+                    delete_chart_item(_ci_id)
+                    st.session_state.cc_pending_delete_item = None
+                    st.toast(f"Deleted: {_ci_title}")
+                    st.rerun()
+                if st.button("Cancel", key=f"ce_del_cancel_{_ci_id}", use_container_width=True):
+                    st.session_state.cc_pending_delete_item = None
+                    st.rerun()
+            else:
+                if st.button("Delete", key=f"ce_del_{_ci_id}", type="secondary", use_container_width=True):
+                    st.session_state.cc_pending_delete_item = _ci_id
+                    if _ci_refs:
+                        st.warning(f"This item is used in: {', '.join(_ci_refs)}")
+                    st.rerun()
+
+        st.divider()
+
+
+# =============================================================================
+# MODE 2: Chart Edit (the original builder)
 # =============================================================================
 
 def render_chart_builder():
-    """Render the Chart Builder page."""
+    """Render the Chart Builder page — routes between Explorer and Edit modes."""
     _init_state()
 
+    # Handle external edit requests (from Dashboard Builder, etc.)
+    if st.session_state.cb_edit_request:
+        st.session_state.cb_mode = "edit"
+
+    if st.session_state.cb_mode == "explore":
+        _render_chart_explorer()
+        return
+
+    # ── Edit mode ─────────────────────────────────────────────────────────
+    _render_chart_edit()
+
+
+def _render_chart_edit():
+    """Render the chart/card edit form (Mode 2)."""
     st.title("Chart Builder")
+
+    # ── Back to Explorer ──────────────────────────────────────────────────
+    if st.button("← Back to Explorer", key="cb_back_to_explorer"):
+        st.session_state.cb_mode = "explore"
+        st.session_state.cb_edit_id = None
+        st.rerun()
 
     # ── Handle edit request from Chart Catalogs page ──────────────────────
     _edit_req = st.session_state.cb_edit_request
@@ -709,6 +1092,18 @@ def render_chart_builder():
             value=st.session_state.get("cb_chart_title", ""),
             key="cb_save_item_title",
         )
+        # Load existing tags when editing
+        _existing_tags = []
+        if st.session_state.cb_item_id:
+            _existing_item = get_chart_item(st.session_state.cb_item_id)
+            if _existing_item:
+                _existing_tags = _existing_item.get("tags", [])
+        _sv_tags = tag_picker(
+            label="Tags",
+            selected=_existing_tags,
+            key="cb_save_chart_tags",
+            allow_create=False,
+        )
         _sv_can_save = bool(cb_series)
         _sv_col_save, _sv_col_saveas = st.columns(2)
         with _sv_col_save:
@@ -723,6 +1118,7 @@ def render_chart_builder():
                 _item_dict = {
                     "type": "chart",
                     "title": _sv_item_title.strip() or st.session_state.get("cb_chart_title", "Untitled"),
+                    "tags": _sv_tags,
                     "chart_subtype": "Time Series",
                     "y_axis": {
                         "min": y_min,
@@ -739,11 +1135,12 @@ def render_chart_builder():
                 if st.session_state.cb_item_id:
                     _item_dict["id"] = st.session_state.cb_item_id
                 _saved_id = upsert_item(_item_dict)
-                # Clear form for next chart
+                # Return to explorer after save
+                st.session_state.cb_mode = "explore"
                 st.session_state.cb_item_id = None
                 st.session_state.cb_series = []
                 st.session_state.cb_data = {}
-                st.session_state["cb_chart_title"] = ""
+                st.session_state.pop("cb_chart_title", None)
                 st.toast("Chart saved")
                 st.rerun()
 
@@ -759,6 +1156,7 @@ def render_chart_builder():
                     _item_dict_new = {
                         "type": "chart",
                         "title": _sv_item_title.strip() or st.session_state.get("cb_chart_title", "Untitled"),
+                        "tags": _sv_tags,
                         "chart_subtype": "Time Series",
                         "y_axis": {"min": y_min, "max": y_max},
                         "y_axis2": {"min": y_min2, "max": y_max2},
@@ -768,11 +1166,12 @@ def render_chart_builder():
                         # no "id" — forces upsert_item to create a new item
                     }
                     _saved_id = upsert_item(_item_dict_new)
-                    # Clear form for next chart
+                    # Return to explorer after save
+                    st.session_state.cb_mode = "explore"
                     st.session_state.cb_item_id = None
                     st.session_state.cb_series = []
                     st.session_state.cb_data = {}
-                    st.session_state["cb_chart_title"] = ""
+                    st.session_state.pop("cb_chart_title", None)
                     st.toast("Saved as new chart")
                     st.rerun()
 
@@ -969,104 +1368,77 @@ def render_chart_builder():
             value=_card_title or _card_feed_name or "",
             key="cb_save_card_item_title",
         )
+        # Load existing tags when editing a card
+        _card_existing_tags = []
+        if st.session_state.cb_item_id:
+            _card_existing_item = get_chart_item(st.session_state.cb_item_id)
+            if _card_existing_item:
+                _card_existing_tags = _card_existing_item.get("tags", [])
+        _svc_tags = tag_picker(
+            label="Tags",
+            selected=_card_existing_tags,
+            key="cb_save_card_tags",
+            allow_create=False,
+        )
         _svc_can_save = bool(_card_feed_id)
-        if st.button(
-            "Save",
-            key="cb_save_card_btn",
-            type="primary",
-            disabled=not _svc_can_save,
-            use_container_width=True,
-            help="Select a feed first" if not _svc_can_save else "",
-        ):
-            _card_item = {
-                "type": "card",
-                "title": _svc_item_title.strip() or _card_title or _card_feed_name,
-                "feed_id": _card_feed_id,
-                "value_format": _card_fmt or ",.2f",
-                "value_suffix": _card_sfx,
-                "delta_type": _card_delta,
-            }
-            if st.session_state.cb_item_id:
-                _card_item["id"] = st.session_state.cb_item_id
-            _saved_card_id = upsert_item(_card_item)
-            # Clear form for next card
-            st.session_state.cb_item_id = None
-            st.session_state.cb_card_feed_id = None
-            st.session_state.cb_card_title = ""
-            st.session_state.cb_card_value_format = ",.2f"
-            st.session_state.cb_card_value_suffix = ""
-            st.session_state.cb_card_delta_type = "none"
-            st.toast("Card saved")
-            st.rerun()
-
-    # ── Saved charts list (always shown at bottom) ────────────────────
-    _render_saved_charts()
-
-
-def _render_saved_charts():
-    """Render saved charts/cards list below Chart Builder."""
-    _init_state()
-
-    st.markdown("---")
-    st.subheader("Saved Charts & Cards")
-
-    _cc_items = list_chart_items()
-
-    if not _cc_items:
-        st.info("No saved charts or cards yet. Build one above and save it.")
-        return
-
-    # Filter
-    _cc_type_filter = st.radio("Filter", ["All", "Charts", "Cards"], horizontal=True, key="cc_type_filter")
-    if _cc_type_filter == "Charts":
-        _cc_items = [i for i in _cc_items if i.get("type") == "chart"]
-    elif _cc_type_filter == "Cards":
-        _cc_items = [i for i in _cc_items if i.get("type") == "card"]
-
-    st.caption(f"{len(_cc_items)} item(s)")
-
-    for _ci in _cc_items:
-        _ci_type = _ci.get("type", "chart")
-        _ci_icon = "📊" if _ci_type == "chart" else "🔢"
-        _ci_title = _ci.get("title", _ci["id"])
-
-        _cc_i_col1, _cc_i_col2, _cc_i_col3 = st.columns([5, 1, 1])
-        with _cc_i_col1:
-            st.markdown(f"**{_ci_icon} {_ci_title}**  `{_ci_type}`")
-            if _ci_type == "chart":
-                _ci_series = _ci.get("series", [])
-                if _ci_series:
-                    st.caption(
-                        "Series: " + ", ".join(
-                            f"`{s['label']}`" for s in _ci_series
-                        )
-                    )
-            elif _ci_type == "card":
-                _ci_feed = _ci.get("feed_id", "")
-                if _ci_feed:
-                    st.caption(f"Feed: `{_ci_feed}`")
-
-        with _cc_i_col2:
-            if st.button("Edit", key=f"cc_edit_{_ci['id']}", use_container_width=True):
-                st.session_state.cb_edit_request = {
-                    "item_id": _ci["id"],
+        _svc_col_save, _svc_col_saveas = st.columns(2)
+        with _svc_col_save:
+            if st.button(
+                "Save",
+                key="cb_save_card_btn",
+                type="primary",
+                disabled=not _svc_can_save,
+                use_container_width=True,
+                help="Select a feed first" if not _svc_can_save else "",
+            ):
+                _card_item = {
+                    "type": "card",
+                    "title": _svc_item_title.strip() or _card_title or _card_feed_name,
+                    "tags": _svc_tags,
+                    "feed_id": _card_feed_id,
+                    "value_format": _card_fmt or ",.2f",
+                    "value_suffix": _card_sfx,
+                    "delta_type": _card_delta,
                 }
-                st.session_state.page = "Chart Builder"
+                if st.session_state.cb_item_id:
+                    _card_item["id"] = st.session_state.cb_item_id
+                _saved_card_id = upsert_item(_card_item)
+                # Return to explorer after save
+                st.session_state.cb_mode = "explore"
+                st.session_state.cb_item_id = None
+                st.session_state.cb_card_feed_id = None
+                st.session_state.cb_card_title = ""
+                st.session_state.cb_card_value_format = ",.2f"
+                st.session_state.cb_card_value_suffix = ""
+                st.session_state.cb_card_delta_type = "none"
+                st.toast("Card saved")
                 st.rerun()
-
-        with _cc_i_col3:
-            if st.session_state.cc_pending_delete_item == _ci["id"]:
-                if st.button("Confirm", key=f"cc_del_confirm_{_ci['id']}", type="primary", use_container_width=True):
-                    delete_chart_item(_ci["id"])
-                    st.session_state.cc_pending_delete_item = None
-                    st.toast(f"Deleted: {_ci_title}")
+        with _svc_col_saveas:
+            if st.session_state.cb_item_id and _svc_can_save:
+                if st.button(
+                    "Save As New",
+                    key="cb_saveas_card_btn",
+                    use_container_width=True,
+                    help="Save a copy without overwriting the original",
+                ):
+                    _card_item_new = {
+                        "type": "card",
+                        "title": _svc_item_title.strip() or _card_title or _card_feed_name,
+                        "tags": _svc_tags,
+                        "feed_id": _card_feed_id,
+                        "value_format": _card_fmt or ",.2f",
+                        "value_suffix": _card_sfx,
+                        "delta_type": _card_delta,
+                        # no "id" — forces upsert_item to create a new item
+                    }
+                    _saved_card_id = upsert_item(_card_item_new)
+                    # Return to explorer after save
+                    st.session_state.cb_mode = "explore"
+                    st.session_state.cb_item_id = None
+                    st.session_state.cb_card_feed_id = None
+                    st.session_state.cb_card_title = ""
+                    st.session_state.cb_card_value_format = ",.2f"
+                    st.session_state.cb_card_value_suffix = ""
+                    st.session_state.cb_card_delta_type = "none"
+                    st.toast("Saved as new card")
                     st.rerun()
-                if st.button("Cancel", key=f"cc_del_cancel_{_ci['id']}", use_container_width=True):
-                    st.session_state.cc_pending_delete_item = None
-                    st.rerun()
-            else:
-                if st.button("Delete", key=f"cc_del_{_ci['id']}", type="secondary", use_container_width=True):
-                    st.session_state.cc_pending_delete_item = _ci["id"]
-                    st.rerun()
-
-        st.divider()

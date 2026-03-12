@@ -82,6 +82,8 @@ def _init_state():
         st.session_state.de_source_meta = {}
     if "de_edit_computed_id" not in st.session_state:
         st.session_state.de_edit_computed_id = None
+    if "de_update_feed" not in st.session_state:
+        st.session_state.de_update_feed = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +93,12 @@ def _init_state():
 def render():
     """Render the Data Explorer page."""
     _init_state()
+
+    # ── Update mode (navigated from Feed Manager) ─────────────────────────
+    update_feed = st.session_state.get("de_update_feed")
+    if update_feed:
+        _render_update_mode(update_feed)
+        return
 
     st.title("Data Explorer")
     st.markdown("Load data from FRED, BEA, file uploads, web scraping, Zillow, or create computed feeds.")
@@ -118,6 +126,398 @@ def render():
     with tabs[5]:
         _render_computed_tab()
 
+
+
+# ---------------------------------------------------------------------------
+# Update mode (navigated from Feed Manager)
+# ---------------------------------------------------------------------------
+
+_PROVIDER_TAB_MAP = {
+    "fred": "FRED",
+    "bea": "BEA",
+    "file": "File Upload",
+    "web": "Web Scraper",
+    "zillow": "Zillow",
+    "computed": "Computed Feed",
+}
+
+
+def _render_update_mode(feed: dict):
+    """Render update mode for an existing feed."""
+    st.title("Data Explorer")
+
+    provider = feed.get("provider", "")
+    feed_name = feed.get("name", feed.get("id", "Unknown"))
+
+    # Computed feeds cannot be updated here
+    if provider == "computed":
+        st.warning(
+            f"**{feed_name}** is a computed feed. "
+            "Computed feeds cannot be updated via Data Explorer. "
+            "Use **Edit Formula** in Feed Manager instead."
+        )
+        if st.button("Back to Data Explorer", key="de_upd_comp_cancel"):
+            st.session_state.de_update_feed = None
+            st.rerun()
+        return
+
+    # Banner
+    provider_label = _PROVIDER_TAB_MAP.get(provider, provider)
+    st.info(f"Updating feed: **{feed_name}** ({provider_label}: `{feed.get('series_id', '')}`)")
+
+    _ban_col1, _ban_col2 = st.columns([4, 1])
+    with _ban_col2:
+        if st.button("Cancel", key="de_upd_cancel", use_container_width=True):
+            st.session_state.de_update_feed = None
+            st.rerun()
+
+    st.markdown("---")
+
+    # Provider-specific update form
+    if provider == "fred":
+        _render_update_fred(feed)
+    elif provider == "bea":
+        _render_update_bea(feed)
+    else:
+        _render_update_generic(feed)
+
+
+def _render_update_fred(feed: dict):
+    """Update form for FRED feeds."""
+    series_id = feed.get("series_id", "")
+    feed_name = feed.get("name", series_id)
+
+    col_a, col_b, col_c = st.columns([2, 1, 1])
+    with col_a:
+        upd_series_id = st.text_input(
+            "Series ID", value=series_id, key="de_upd_fred_sid",
+        ).strip().upper()
+    with col_b:
+        upd_start = st.date_input("Start Date Override", value=None, key="de_upd_fred_start")
+    with col_c:
+        upd_end = st.date_input("End Date Override", value=None, key="de_upd_fred_end")
+
+    upd_name = st.text_input("Feed name", value=feed_name, key="de_upd_fred_name")
+
+    # Auto-load preview
+    _upd_preview_key = "de_upd_preview_data"
+    if _upd_preview_key not in st.session_state:
+        # Auto-fetch on first render
+        try:
+            df = load_fred_series(
+                upd_series_id,
+                start_date=str(upd_start) if upd_start else None,
+                end_date=str(upd_end) if upd_end else None,
+            )
+            st.session_state[_upd_preview_key] = df
+        except Exception as e:
+            st.error(f"Failed to load series: {e}")
+
+    if st.button("Reload Preview", key="de_upd_fred_reload", use_container_width=True):
+        if not upd_series_id:
+            st.warning("Enter a Series ID.")
+        else:
+            try:
+                df = load_fred_series(
+                    upd_series_id,
+                    start_date=str(upd_start) if upd_start else None,
+                    end_date=str(upd_end) if upd_end else None,
+                )
+                st.session_state[_upd_preview_key] = df
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load series: {e}")
+
+    # Show preview
+    df_preview = st.session_state.get(_upd_preview_key)
+    if df_preview is not None and not df_preview.empty:
+        fig = time_series_chart(df_preview, title=upd_name or upd_series_id)
+        fig = apply_style(fig)
+        fig = apply_range_slider(fig, visible=True)
+        st.plotly_chart(fig, use_container_width=True, key="de_upd_fred_chart")
+
+        # Enrich metadata
+        meta = {"provider": "fred", "series_id": upd_series_id}
+        try:
+            info = get_series_info(upd_series_id)
+            if info:
+                meta["frequency"] = info.get("frequency", "")
+                meta["units"] = info.get("units", "")
+        except Exception:
+            pass
+        try:
+            rs = get_series_release_source(upd_series_id)
+            if rs.get("source"):
+                meta["source"] = rs["source"]
+            if rs.get("release"):
+                meta["release"] = rs["release"]
+        except Exception:
+            pass
+
+        # Tags
+        try:
+            from modules.config.tag_catalog import list_tags as _upd_list_tags
+            _all_tags = _upd_list_tags()
+            _tag_names = [t["name"] for t in _all_tags] if _all_tags else []
+        except Exception:
+            _tag_names = []
+
+        existing_tags = feed.get("tags", [])
+        if _tag_names:
+            upd_tags = st.multiselect(
+                "Tags", options=_tag_names,
+                default=[t for t in existing_tags if t in _tag_names],
+                key="de_upd_tags_ms",
+            )
+        else:
+            upd_tags_str = st.text_input(
+                "Tags (comma-separated)",
+                value=", ".join(existing_tags),
+                key="de_upd_tags_str",
+            )
+            upd_tags = [t.strip() for t in upd_tags_str.split(",") if t.strip()] if upd_tags_str else []
+
+        st.markdown("---")
+
+        # Save buttons
+        _save_col1, _save_col2 = st.columns(2)
+        with _save_col1:
+            if st.button("Update Feed", key="de_upd_fred_save", type="primary", use_container_width=True):
+                updates = {
+                    "name": upd_name.strip() or feed["name"],
+                    "series_id": upd_series_id,
+                    "tags": upd_tags,
+                    "frequency": meta.get("frequency", feed.get("frequency", "")),
+                    "units": meta.get("units", feed.get("units", "")),
+                    "source": meta.get("source", feed.get("source", "")),
+                    "release": meta.get("release", feed.get("release", "")),
+                }
+                update_feed(feed["id"], updates)
+                st.session_state.de_update_feed = None
+                st.session_state.pop(_upd_preview_key, None)
+                st.toast(f"Updated feed: {upd_name.strip() or feed['name']}")
+                st.rerun()
+        with _save_col2:
+            if st.button("Save as New Feed", key="de_upd_fred_saveas", use_container_width=True):
+                _pm = {}
+                if meta.get("source"):
+                    _pm["source"] = meta["source"]
+                if meta.get("release"):
+                    _pm["release"] = meta["release"]
+                new_feed = create_feed(
+                    name=upd_name.strip() or upd_series_id,
+                    provider="fred",
+                    series_id=upd_series_id,
+                    frequency=meta.get("frequency", ""),
+                    units=meta.get("units", ""),
+                    tags=upd_tags,
+                    provider_metadata=_pm if _pm else None,
+                    source=meta.get("source", ""),
+                    release=meta.get("release", ""),
+                )
+                st.session_state.de_update_feed = None
+                st.session_state.pop(_upd_preview_key, None)
+                st.toast(f"Saved new feed: {upd_name.strip() or upd_series_id} ({new_feed['id']})")
+                st.rerun()
+
+
+def _render_update_bea(feed: dict):
+    """Update form for BEA feeds."""
+    series_id = feed.get("series_id", "")
+    feed_name = feed.get("name", series_id)
+    _pm = feed.get("provider_metadata", {})
+
+    _bea_ds_col, _bea_freq_col = st.columns([2, 1])
+    with _bea_ds_col:
+        # Try to detect dataset from params or default to NIPA
+        _upd_dataset = st.selectbox(
+            "Dataset",
+            options=list(SUPPORTED_DATASETS.keys()),
+            format_func=lambda k: f"{k} -- {SUPPORTED_DATASETS[k]}",
+            key="de_upd_bea_dataset",
+        )
+    with _bea_freq_col:
+        _freq_opts = ["A"] if _upd_dataset in ANNUAL_ONLY_DATASETS else ["Q", "A"]
+        _existing_freq = feed.get("frequency", "")
+        _default_idx = 0
+        if "Annual" in _existing_freq and "A" in _freq_opts:
+            _default_idx = _freq_opts.index("A")
+        elif "Quarterly" in _existing_freq and "Q" in _freq_opts:
+            _default_idx = _freq_opts.index("Q")
+        _upd_bea_freq = st.selectbox(
+            "Frequency",
+            options=_freq_opts,
+            index=_default_idx,
+            format_func=lambda f: {"Q": "Quarterly", "A": "Annual"}[f],
+            key="de_upd_bea_freq",
+        )
+
+    upd_table = st.text_input("Table Name", value=series_id, key="de_upd_bea_table")
+    upd_name = st.text_input("Feed name", value=feed_name, key="de_upd_bea_name")
+
+    # Auto-load preview
+    _upd_preview_key = "de_upd_preview_data"
+    if _upd_preview_key not in st.session_state:
+        try:
+            _bea_key, _ = get_bea_key_status()
+            if _bea_key:
+                df = fetch_bea_table(_upd_dataset, upd_table, _upd_bea_freq, years=last_n_years(5))
+                st.session_state[_upd_preview_key] = df
+        except Exception as e:
+            st.error(f"Failed to load BEA table: {e}")
+
+    if st.button("Reload Preview", key="de_upd_bea_reload", use_container_width=True):
+        try:
+            df = fetch_bea_table(_upd_dataset, upd_table, _upd_bea_freq, years=last_n_years(5))
+            st.session_state[_upd_preview_key] = df
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to load BEA table: {e}")
+
+    df_preview = st.session_state.get(_upd_preview_key)
+    if df_preview is not None and not df_preview.empty:
+        st.line_chart(df_preview)
+
+        # Tags
+        try:
+            from modules.config.tag_catalog import list_tags as _upd_list_tags
+            _all_tags = _upd_list_tags()
+            _tag_names = [t["name"] for t in _all_tags] if _all_tags else []
+        except Exception:
+            _tag_names = []
+
+        existing_tags = feed.get("tags", [])
+        if _tag_names:
+            upd_tags = st.multiselect(
+                "Tags", options=_tag_names,
+                default=[t for t in existing_tags if t in _tag_names],
+                key="de_upd_bea_tags_ms",
+            )
+        else:
+            upd_tags_str = st.text_input(
+                "Tags (comma-separated)",
+                value=", ".join(existing_tags),
+                key="de_upd_bea_tags_str",
+            )
+            upd_tags = [t.strip() for t in upd_tags_str.split(",") if t.strip()] if upd_tags_str else []
+
+        st.markdown("---")
+        freq_label = {"Q": "Quarterly", "A": "Annual"}.get(_upd_bea_freq, _upd_bea_freq)
+        _save_col1, _save_col2 = st.columns(2)
+        with _save_col1:
+            if st.button("Update Feed", key="de_upd_bea_save", type="primary", use_container_width=True):
+                update_feed(feed["id"], {
+                    "name": upd_name.strip() or feed["name"],
+                    "series_id": upd_table.strip(),
+                    "frequency": freq_label,
+                    "tags": upd_tags,
+                })
+                st.session_state.de_update_feed = None
+                st.session_state.pop(_upd_preview_key, None)
+                st.toast(f"Updated feed: {upd_name.strip() or feed['name']}")
+                st.rerun()
+        with _save_col2:
+            if st.button("Save as New Feed", key="de_upd_bea_saveas", use_container_width=True):
+                new_feed = create_feed(
+                    name=upd_name.strip() or upd_table,
+                    provider="bea",
+                    series_id=upd_table.strip(),
+                    frequency=freq_label,
+                    tags=upd_tags,
+                )
+                st.session_state.de_update_feed = None
+                st.session_state.pop(_upd_preview_key, None)
+                st.toast(f"Saved new feed: {upd_name.strip() or upd_table} ({new_feed['id']})")
+                st.rerun()
+
+
+def _render_update_generic(feed: dict):
+    """Update form for file, web, zillow, and other provider feeds."""
+    feed_name = feed.get("name", feed.get("id", "Unknown"))
+    provider = feed.get("provider", "unknown")
+
+    st.caption(f"Provider: **{provider}** | Series: `{feed.get('series_id', '')}`")
+
+    upd_name = st.text_input("Feed name", value=feed_name, key="de_upd_gen_name")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        upd_freq = st.text_input("Frequency", value=feed.get("frequency", ""), key="de_upd_gen_freq")
+    with col2:
+        upd_units = st.text_input("Units", value=feed.get("units", ""), key="de_upd_gen_units")
+
+    # Tags
+    try:
+        from modules.config.tag_catalog import list_tags as _upd_list_tags
+        _all_tags = _upd_list_tags()
+        _tag_names = [t["name"] for t in _all_tags] if _all_tags else []
+    except Exception:
+        _tag_names = []
+
+    existing_tags = feed.get("tags", [])
+    if _tag_names:
+        upd_tags = st.multiselect(
+            "Tags", options=_tag_names,
+            default=[t for t in existing_tags if t in _tag_names],
+            key="de_upd_gen_tags_ms",
+        )
+    else:
+        upd_tags_str = st.text_input(
+            "Tags (comma-separated)",
+            value=", ".join(existing_tags),
+            key="de_upd_gen_tags_str",
+        )
+        upd_tags = [t.strip() for t in upd_tags_str.split(",") if t.strip()] if upd_tags_str else []
+
+    # Auto-load preview
+    _upd_preview_key = "de_upd_preview_data"
+    if _upd_preview_key not in st.session_state:
+        try:
+            from services.data_resolver import resolve_feed_data
+            df = resolve_feed_data(feed)
+            if df is not None and not df.empty:
+                st.session_state[_upd_preview_key] = df
+        except Exception:
+            pass
+
+    df_preview = st.session_state.get(_upd_preview_key)
+    if df_preview is not None and not df_preview.empty:
+        fig = time_series_chart(df_preview, title=upd_name or feed_name)
+        fig = apply_style(fig)
+        st.plotly_chart(fig, use_container_width=True, key="de_upd_gen_chart")
+
+    st.markdown("---")
+    _save_col1, _save_col2 = st.columns(2)
+    with _save_col1:
+        if st.button("Update Feed", key="de_upd_gen_save", type="primary", use_container_width=True):
+            update_feed(feed["id"], {
+                "name": upd_name.strip() or feed["name"],
+                "frequency": upd_freq.strip(),
+                "units": upd_units.strip(),
+                "tags": upd_tags,
+            })
+            st.session_state.de_update_feed = None
+            st.session_state.pop(_upd_preview_key, None)
+            st.toast(f"Updated feed: {upd_name.strip() or feed['name']}")
+            st.rerun()
+    with _save_col2:
+        if st.button("Save as New Feed", key="de_upd_gen_saveas", use_container_width=True):
+            new_feed = create_feed(
+                name=upd_name.strip() or feed_name,
+                provider=provider,
+                series_id=feed.get("series_id", ""),
+                frequency=upd_freq.strip(),
+                units=upd_units.strip(),
+                tags=upd_tags,
+                params=feed.get("params", {}),
+                provider_metadata=feed.get("provider_metadata", {}),
+                source=feed.get("source", ""),
+                release=feed.get("release", ""),
+            )
+            st.session_state.de_update_feed = None
+            st.session_state.pop(_upd_preview_key, None)
+            st.toast(f"Saved new feed: {upd_name.strip() or feed_name} ({new_feed['id']})")
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------

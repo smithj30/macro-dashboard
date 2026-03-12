@@ -685,6 +685,47 @@ def render() -> None:
     st.title("Dashboard Builder")
     _init_state()
 
+    # ── Handle prefill from Chart Explorer bulk action ────────────────────
+    prefill_charts = st.session_state.pop("builder_prefill_charts", None)
+    if prefill_charts:
+        n = len(prefill_charts)
+        if n <= 2:
+            layout = "full"
+        elif n <= 4:
+            layout = "half"
+        elif n <= 6:
+            layout = "third"
+        else:
+            layout = "quarter"
+
+        sections = []
+        for cid in prefill_charts:
+            item = get_chart_item(cid)
+            sec_type = "card_row" if item and item.get("type") == "card" else "chart"
+            if sec_type == "card_row":
+                sections.append({
+                    "id": _new_section_id(),
+                    "type": "card_row",
+                    "layout": "full",
+                    "cards": [{"chart_id": cid}],
+                })
+            else:
+                sections.append({
+                    "id": _new_section_id(),
+                    "type": "chart",
+                    "layout": layout,
+                    "chart_id": cid,
+                })
+
+        st.session_state.builder_draft = {
+            "type": "dynamic",
+            "title": "",
+            "description": "",
+            "sections": sections,
+        }
+        st.session_state.builder_edit_id = None
+        st.session_state.builder_step = 1
+
     # Track page entry: if we're coming from a different page, decide whether
     # to reset or offer to resume an in-progress draft.
     prev_page = st.session_state.get("_builder_prev_page")

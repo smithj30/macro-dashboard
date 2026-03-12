@@ -110,7 +110,7 @@ def _render_browse():
     for feed in feeds:
         is_computed = feed.get("provider") == "computed"
         with st.container():
-            cols = st.columns([3, 2, 2, 1, 1, 1])
+            cols = st.columns([3, 2, 2, 1, 1, 1, 1])
             with cols[0]:
                 st.markdown(f"**{feed['name']}**")
                 # Show formula subtitle for computed feeds
@@ -153,11 +153,16 @@ def _render_browse():
                         st.session_state.fm_edit_id = feed["id"]
                         st.rerun()
             with cols[4]:
+                if st.button("Update", key=f"fm_upd_{feed['id']}", use_container_width=True):
+                    st.session_state.de_update_feed = dict(feed)
+                    st.session_state.page = "Data Explorer"
+                    st.rerun()
+            with cols[5]:
                 if st.button("Edit", key=f"fm_edit_{feed['id']}", use_container_width=True):
                     st.session_state.fm_mode = "edit"
                     st.session_state.fm_edit_id = feed["id"]
                     st.rerun()
-            with cols[5]:
+            with cols[6]:
                 if st.session_state.fm_pending_delete == feed["id"]:
                     if st.button("Confirm", key=f"fm_del_confirm_{feed['id']}", use_container_width=True, type="primary"):
                         delete_feed(feed["id"])
