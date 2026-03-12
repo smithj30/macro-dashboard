@@ -15,6 +15,7 @@ import streamlit as st
 
 from modules.config.dashboard_config import save_config
 from modules.config.chart_config import get_item as get_chart_item
+from modules.config.feed_catalog import get_feed, find_feed, update_feed
 from modules.data_ingestion.fred_loader import load_fred_series
 from modules.data_processing.transforms import (
     month_over_month,
@@ -24,6 +25,7 @@ from modules.data_processing.transforms import (
 from modules.visualization.charts import time_series_chart
 from modules.visualization.news_widget import render_news_section
 from components.chart_renderer import apply_style
+from services.staleness import staleness_level, last_refreshed_dt
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +114,127 @@ def _yoy_pct(series: pd.Series) -> Optional[float]:
         return (curr / prev - 1) * 100
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Feed staleness helpers
+# ---------------------------------------------------------------------------
+
+
+def _collect_feed_ids_from_series(series_defs: List[Dict[str, Any]]) -> List[str]:
+    """Extract unique feed_ids from a list of series definitions.
+
+    Handles explicit feed_id fields, and also attempts to match
+    FRED / catalog sources back to registered feeds via find_feed().
+    """
+    ids: List[str] = []
+    for sdef in series_defs:
+        fid = sdef.get("feed_id", "")
+        if fid:
+            if fid not in ids:
+                ids.append(fid)
+            continue
+
+        # Try to resolve FRED or catalog-sourced series to a registered feed
+        source = sdef.get("source", "")
+        if source == "fred":
+            sid = sdef.get("series_id", "")
+            if sid:
+                feed = find_feed("fred", sid)
+                if feed and feed["id"] not in ids:
+                    ids.append(feed["id"])
+        elif source == "catalog":
+            col = sdef.get("col", "")
+            if col:
+                feed = find_feed("fred", col)
+                if feed and feed["id"] not in ids:
+                    ids.append(feed["id"])
+    return ids
+
+
+def _collect_feed_ids_from_section(sec: Dict[str, Any]) -> List[str]:
+    """Collect all feed IDs referenced by a dashboard section."""
+    ids: List[str] = []
+
+    # Chart sections with series list
+    for fid in _collect_feed_ids_from_series(sec.get("series", [])):
+        if fid not in ids:
+            ids.append(fid)
+
+    # Catalog chart reference — resolve chart item and pull its feed IDs
+    chart_id = sec.get("chart_id", "")
+    if chart_id:
+        item = get_chart_item(chart_id)
+        if item:
+            for fid in _collect_feed_ids_from_series(item.get("series", [])):
+                if fid not in ids:
+                    ids.append(fid)
+            # Card feed_id
+            card_fid = item.get("feed_id", "")
+            if card_fid and card_fid not in ids:
+                ids.append(card_fid)
+
+    # Card rows
+    for card_ref in sec.get("cards", []):
+        cid = card_ref.get("chart_id", "")
+        if cid:
+            citem = get_chart_item(cid)
+            if citem:
+                card_fid = citem.get("feed_id", "")
+                if card_fid and card_fid not in ids:
+                    ids.append(card_fid)
+                for fid in _collect_feed_ids_from_series(citem.get("series", [])):
+                    if fid not in ids:
+                        ids.append(fid)
+
+    return ids
+
+
+def _collect_all_feed_ids(config: Dict[str, Any]) -> List[str]:
+    """Collect all unique feed IDs from every section in a dashboard config."""
+    ids: List[str] = []
+    for sec in config.get("sections", []):
+        for fid in _collect_feed_ids_from_section(sec):
+            if fid not in ids:
+                ids.append(fid)
+    return ids
+
+
+def _render_staleness_caption(feed_ids: List[str]) -> None:
+    """Show a staleness caption for a set of feed IDs.
+
+    Displays the oldest last_refreshed date and a colored indicator
+    if any feed is stale or very_stale.
+    """
+    if not feed_ids:
+        return
+
+    oldest_dt: Optional[datetime] = None
+    worst_level = "fresh"
+    level_priority = {"fresh": 0, "stale": 1, "very_stale": 2}
+
+    for fid in feed_ids:
+        feed = get_feed(fid)
+        if feed is None:
+            continue
+        level = staleness_level(feed)
+        if level_priority.get(level, 0) > level_priority.get(worst_level, 0):
+            worst_level = level
+        dt = last_refreshed_dt(feed)
+        if dt is not None:
+            if oldest_dt is None or dt < oldest_dt:
+                oldest_dt = dt
+
+    if worst_level == "very_stale":
+        if oldest_dt is None:
+            st.caption(":red[⬤] Never refreshed")
+        else:
+            st.caption(f":red[⬤] Last updated: {oldest_dt.strftime('%b %d, %Y %H:%M')}")
+    elif worst_level == "stale":
+        st.caption(f":orange[⬤] Last updated: {oldest_dt.strftime('%b %d, %Y %H:%M') if oldest_dt else 'unknown'}")
+    else:
+        if oldest_dt is not None:
+            st.caption(f"Last updated: {oldest_dt.strftime('%b %d, %Y %H:%M')}")
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +459,7 @@ def _render_chart_section(
     apply_style(fig)
     fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)
+    _render_staleness_caption(_collect_feed_ids_from_section(sec))
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +660,7 @@ def _render_catalog_chart_section(
     apply_style(fig)
     fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)
+    _render_staleness_caption(_collect_feed_ids_from_section(sec))
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +746,8 @@ def _render_card_row_section(sec: Dict[str, Any]) -> None:
         if prior or nxt:
             col.caption(f"Prior: {prior or '—'}  ·  Next: {nxt or '—'}")
 
+    _render_staleness_caption(_collect_feed_ids_from_section(sec))
+
 
 # ---------------------------------------------------------------------------
 # Grid layout helpers
@@ -657,6 +784,55 @@ def _group_into_rows(sections: List[Dict[str, Any]]) -> List[List[Dict[str, Any]
         rows.append(pending)
 
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Dashboard refresh
+# ---------------------------------------------------------------------------
+
+
+def _refresh_dashboard_feeds(config: Dict[str, Any]) -> None:
+    """Re-fetch all feeds referenced by a dashboard and update timestamps."""
+    from services.data_resolver import resolve_feed_data
+
+    feed_ids = _collect_all_feed_ids(config)
+
+    if not feed_ids:
+        # No feeds — just clear caches and reload
+        _load_series_fred.clear()
+        _load_card_fred.clear()
+        _load_series_feed.clear()
+        st.rerun()
+        return
+
+    progress = st.progress(0, text="Refreshing feeds...")
+    errors: List[str] = []
+    total = len(feed_ids)
+
+    for i, fid in enumerate(feed_ids):
+        feed = get_feed(fid)
+        if feed is None:
+            errors.append(f"Feed not found: {fid}")
+            progress.progress((i + 1) / total, text=f"Refreshing feeds... ({i + 1}/{total})")
+            continue
+        try:
+            resolve_feed_data(feed)
+            update_feed(fid, {"last_refreshed": datetime.now().isoformat()})
+        except Exception as exc:
+            errors.append(f"{feed.get('name', fid)}: {exc}")
+        progress.progress((i + 1) / total, text=f"Refreshing feeds... ({i + 1}/{total})")
+
+    progress.empty()
+
+    if errors:
+        for err in errors:
+            st.warning(err)
+
+    # Clear caches so charts re-render with fresh data
+    _load_series_fred.clear()
+    _load_card_fred.clear()
+    _load_series_feed.clear()
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -698,11 +874,8 @@ def render(config: Dict[str, Any], preview: bool = False) -> None:
                 st.rerun()
         with _tb_refresh:
             st.markdown("<div style='padding-top:0.6rem'></div>", unsafe_allow_html=True)
-            if st.button("Refresh", key=f"dyn_refresh_{config.get('id', '')}", help="Reload all data"):
-                _load_series_fred.clear()
-                _load_card_fred.clear()
-                _load_series_feed.clear()
-                st.rerun()
+            if st.button("Refresh", key=f"dyn_refresh_{config.get('id', '')}", help="Re-fetch all feed data"):
+                _refresh_dashboard_feeds(config)
 
     sections = config.get("sections", [])
     if not sections:

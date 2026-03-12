@@ -34,3 +34,27 @@
   - **Add to Dashboard** — appends selected charts to an existing dashboard
   - **Bulk Tag** — apply tags to all selected charts at once
   - **Bulk Delete** — delete selected charts with confirmation
+
+## Staleness Indicators on Dashboards
+
+When viewing a dashboard, each chart and card row shows a **"Last updated"** caption indicating data freshness:
+
+- **No indicator** — the chart's feeds are fresh (within their expected schedule interval)
+- **Amber dot** — one or more feeds are **stale** (past their schedule but within 2x the interval)
+- **Red dot** — one or more feeds are **very stale** (past 2x the interval) or have **never been refreshed**
+
+Staleness thresholds are based on each feed's `refresh_schedule`:
+- **Daily** feeds: fresh < 24h, stale 24–40h, very stale > 40h
+- **Weekly** feeds: fresh < 7d, stale 7–12d, very stale > 12d
+- **Monthly** feeds: fresh < 31d, stale 31–50d, very stale > 50d
+- **Manual** feeds: always shown as fresh
+
+## Refreshing Dashboard Data
+
+Click the **Refresh** button in the dashboard toolbar to re-fetch all feed data:
+
+1. The button collects every unique feed referenced by charts and cards on the dashboard
+2. Each feed is re-fetched from its provider (FRED, BEA, etc.) with a progress bar
+3. `last_refreshed` timestamps are updated in `feeds.json` for each successful fetch
+4. If a feed fails to refresh, the error is shown but remaining feeds continue
+5. The page automatically reloads to display the updated data and fresh staleness indicators
