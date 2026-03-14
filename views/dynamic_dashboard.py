@@ -24,7 +24,7 @@ from modules.data_processing.transforms import (
 )
 from modules.visualization.charts import time_series_chart
 from modules.visualization.news_widget import render_news_section
-from components.chart_renderer import apply_style
+from components.chart_renderer import apply_style, apply_annotations
 from services.staleness import staleness_level, last_refreshed_dt
 
 
@@ -658,6 +658,7 @@ def _render_catalog_chart_section(
     data_range = _compute_data_range(merged, dual_axis_col)
     _section_title_with_settings(title, sec, config, data_range=data_range, has_dual_axis=dual_axis_col is not None)
     apply_style(fig)
+    apply_annotations(fig, item.get("annotations", []))
     fig.update_layout(margin=dict(t=30))
     st.plotly_chart(fig, use_container_width=True)
     _render_staleness_caption(_collect_feed_ids_from_section(sec))

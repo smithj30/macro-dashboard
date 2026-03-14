@@ -100,6 +100,133 @@ def apply_style(fig: go.Figure) -> go.Figure:
     return fig
 
 
+def apply_annotations(fig: go.Figure, annotations: list) -> go.Figure:
+    """Apply chart annotations (point, hline, vline, range) to a Plotly figure.
+
+    Each annotation dict has a "type" key and type-specific fields.
+    An optional "style" dict can override visual defaults.
+    """
+    if not annotations:
+        return fig
+
+    for ann in annotations:
+        ann_type = ann.get("type", "")
+        style = ann.get("style", {})
+        label = ann.get("label", "")
+
+        if ann_type == "point":
+            date = ann.get("date")
+            value = ann.get("value")
+            text = ann.get("text", label)
+            kwargs = dict(
+                x=date,
+                text=text,
+                showarrow=True,
+                arrowhead=2,
+                arrowwidth=1.5,
+                arrowcolor=style.get("line_color", "#9EA3AB"),
+                bgcolor=style.get("fill_color", "rgba(255,255,255,0.8)"),
+                font=dict(
+                    size=style.get("font_size", 11),
+                    color=style.get("color", "#333333"),
+                ),
+                bordercolor=style.get("line_color", "#9EA3AB"),
+                borderwidth=1,
+                borderpad=4,
+            )
+            if value is not None:
+                kwargs["y"] = value
+                kwargs["yref"] = ann.get("yref", "y")
+            else:
+                kwargs["y"] = 1
+                kwargs["yref"] = "paper"
+                kwargs["ay"] = -40
+            fig.add_annotation(**kwargs)
+
+        elif ann_type == "hline":
+            value = ann.get("value")
+            if value is None:
+                continue
+            yref = ann.get("yref", "y")
+            fig.add_hline(
+                y=value,
+                yref=yref,
+                line_dash=style.get("line_dash", "dot"),
+                line_color=style.get("line_color", "#9EA3AB"),
+                line_width=style.get("line_width", 1.5),
+            )
+            if label:
+                fig.add_annotation(
+                    x=0,
+                    xref="paper",
+                    y=value,
+                    yref=yref,
+                    text=label,
+                    showarrow=False,
+                    font=dict(size=style.get("font_size", 11), color=style.get("color", "#333333")),
+                    bgcolor="rgba(255,255,255,0.8)",
+                    bordercolor=style.get("line_color", "#9EA3AB"),
+                    borderwidth=1,
+                    borderpad=3,
+                    xanchor="left",
+                )
+
+        elif ann_type == "vline":
+            date = ann.get("date")
+            if not date:
+                continue
+            fig.add_vline(
+                x=date,
+                line_dash=style.get("line_dash", "dot"),
+                line_color=style.get("line_color", "#9EA3AB"),
+                line_width=style.get("line_width", 1.5),
+            )
+            if label:
+                fig.add_annotation(
+                    x=date,
+                    y=1,
+                    yref="paper",
+                    text=label,
+                    showarrow=False,
+                    font=dict(size=style.get("font_size", 11), color=style.get("color", "#333333")),
+                    bgcolor="rgba(255,255,255,0.8)",
+                    bordercolor=style.get("line_color", "#9EA3AB"),
+                    borderwidth=1,
+                    borderpad=3,
+                    yshift=10,
+                )
+
+        elif ann_type == "range":
+            x0 = ann.get("x0") or ann.get("start")
+            x1 = ann.get("x1") or ann.get("end")
+            if not x0 or not x1:
+                continue
+            fig.add_vrect(
+                x0=x0,
+                x1=x1,
+                fillcolor=style.get("fill_color", "rgba(225, 219, 212, 0.25)"),
+                line_width=style.get("line_width", 0),
+                line_color=style.get("line_color", "rgba(0,0,0,0)"),
+            )
+            if label:
+                fig.add_annotation(
+                    x=x0,
+                    y=1,
+                    yref="paper",
+                    text=label,
+                    showarrow=False,
+                    font=dict(size=style.get("font_size", 11), color=style.get("color", "#333333")),
+                    bgcolor="rgba(255,255,255,0.8)",
+                    bordercolor=style.get("line_color", "#9EA3AB"),
+                    borderwidth=1,
+                    borderpad=3,
+                    yshift=10,
+                    xanchor="left",
+                )
+
+    return fig
+
+
 def apply_range_slider(fig: go.Figure, visible: bool = True) -> go.Figure:
     """Apply a thin range slider (no mini-chart) to the x-axis."""
     if not visible:
@@ -208,6 +335,8 @@ def render_chart(
         recession_color = get_recession_shading_color()
         fig = apply_recession_shading(fig, color=recession_color)
 
+    fig = apply_annotations(fig, chart_config.get("annotations", []))
+
     st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_chart")
 
 
@@ -311,6 +440,8 @@ def render_v2_chart(
     if options.get("recession_shading", False):
         recession_color = get_recession_shading_color()
         fig = apply_recession_shading(fig, color=recession_color)
+
+    fig = apply_annotations(fig, chart_config.get("annotations", []))
 
     out.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_v2chart")
     return fig

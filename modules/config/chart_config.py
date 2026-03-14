@@ -26,6 +26,8 @@ Item schema:
     "value_suffix": "%",
     "delta_type": "period",
 
+    "annotations": [],
+
     "created_at": "...",
     "updated_at": "..."
 }
@@ -90,6 +92,7 @@ def get_item(item_id: str) -> Optional[Dict[str, Any]]:
     """Return a single item by ID, or None."""
     for i in _load_all():
         if i.get("id") == item_id:
+            i.setdefault("annotations", [])
             return i
     return None
 

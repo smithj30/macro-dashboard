@@ -38,7 +38,7 @@ from modules.visualization.charts import (
     scatter_chart,
     apply_clip_arrows,
 )
-from components.chart_renderer import apply_style
+from components.chart_renderer import apply_style, apply_annotations
 
 
 # ── Helpers used by other pages (imported from app.py) ────────────────────────
@@ -93,6 +93,10 @@ def _init_state():
         st.session_state.cb_card_value_suffix = ""
     if "cb_card_delta_type" not in st.session_state:
         st.session_state.cb_card_delta_type = "none"
+
+    # Annotations state
+    if "cb_annotations" not in st.session_state:
+        st.session_state.cb_annotations = []
 
     # Chart Catalogs — delete confirmation state
     if "cc_pending_delete_item" not in st.session_state:
@@ -591,6 +595,7 @@ def _render_chart_edit():
                 st.session_state["cb_use_y_max2"] = _ya2.get("max") is not None
                 st.session_state["cb_y_max2"] = _ya2.get("max") or 100.0
                 st.session_state["cb_show_legend"] = _er_item.get("show_legend", True)
+                st.session_state.cb_annotations = list(_er_item.get("annotations", []))
                 st.session_state.cb_data = _load_chart_series_data(_er_item.get("series", []))
             else:
                 # Feed-first: use feed_id if present, else try to resolve from old format
@@ -1054,6 +1059,119 @@ def _render_chart_edit():
                 st.session_state.cb_data = {}
                 st.rerun()
 
+        # ── Annotations ──────────────────────────────────────────────────
+        cb_annotations = st.session_state.cb_annotations
+        with st.expander(f"Annotations ({len(cb_annotations)})", expanded=False):
+            _ann_type_opts = ["Point", "Horizontal Line", "Vertical Line", "Date Range"]
+            _ann_type_map = {"Point": "point", "Horizontal Line": "hline", "Vertical Line": "vline", "Date Range": "range"}
+
+            _ann_new_type = st.selectbox("Type", _ann_type_opts, key="cb_ann_new_type")
+
+            if _ann_type_map[_ann_new_type] == "point":
+                _ann_c1, _ann_c2 = st.columns(2)
+                with _ann_c1:
+                    _ann_date = st.date_input("Date", key="cb_ann_point_date")
+                with _ann_c2:
+                    _ann_text = st.text_input("Text", key="cb_ann_point_text")
+                _ann_use_val = st.checkbox("Set value (y-position)", key="cb_ann_point_use_val")
+                _ann_val = st.number_input("Value", value=0.0, key="cb_ann_point_val") if _ann_use_val else None
+                if st.button("Add Point Annotation", key="cb_ann_add_point"):
+                    st.session_state.cb_annotations.append({
+                        "type": "point",
+                        "date": str(_ann_date),
+                        "text": _ann_text,
+                        "value": _ann_val,
+                        "label": _ann_text,
+                        "style": {},
+                    })
+                    st.rerun()
+
+            elif _ann_type_map[_ann_new_type] == "hline":
+                _ann_c1, _ann_c2 = st.columns(2)
+                with _ann_c1:
+                    _ann_hval = st.number_input("Y value", value=0.0, key="cb_ann_hline_val")
+                with _ann_c2:
+                    _ann_haxis = st.selectbox("Axis", ["Left (y)", "Right (y2)"], key="cb_ann_hline_axis")
+                _ann_hlabel = st.text_input("Label (optional)", key="cb_ann_hline_label")
+                if st.button("Add Horizontal Line", key="cb_ann_add_hline"):
+                    st.session_state.cb_annotations.append({
+                        "type": "hline",
+                        "value": _ann_hval,
+                        "yref": "y2" if "y2" in _ann_haxis else "y",
+                        "label": _ann_hlabel,
+                        "style": {},
+                    })
+                    st.rerun()
+
+            elif _ann_type_map[_ann_new_type] == "vline":
+                _ann_vdate = st.date_input("Date", key="cb_ann_vline_date")
+                _ann_vlabel = st.text_input("Label (optional)", key="cb_ann_vline_label")
+                if st.button("Add Vertical Line", key="cb_ann_add_vline"):
+                    st.session_state.cb_annotations.append({
+                        "type": "vline",
+                        "date": str(_ann_vdate),
+                        "label": _ann_vlabel,
+                        "style": {},
+                    })
+                    st.rerun()
+
+            elif _ann_type_map[_ann_new_type] == "range":
+                _ann_rc1, _ann_rc2 = st.columns(2)
+                with _ann_rc1:
+                    _ann_rstart = st.date_input("Start date", key="cb_ann_range_start")
+                with _ann_rc2:
+                    _ann_rend = st.date_input("End date", key="cb_ann_range_end")
+                _ann_rlabel = st.text_input("Label (optional)", key="cb_ann_range_label")
+                if st.button("Add Date Range", key="cb_ann_add_range"):
+                    st.session_state.cb_annotations.append({
+                        "type": "range",
+                        "x0": str(_ann_rstart),
+                        "x1": str(_ann_rend),
+                        "label": _ann_rlabel,
+                        "style": {},
+                    })
+                    st.rerun()
+
+            # Display existing annotations with delete + style override
+            if cb_annotations:
+                st.markdown("---")
+                st.markdown("**Current annotations**")
+                for _ai, _ann in enumerate(cb_annotations):
+                    _ann_desc = _ann.get("type", "?")
+                    if _ann.get("label"):
+                        _ann_desc += f': "{_ann["label"]}"'
+                    elif _ann.get("text"):
+                        _ann_desc += f': "{_ann["text"]}"'
+                    if _ann.get("date"):
+                        _ann_desc += f' @ {_ann["date"]}'
+                    if _ann.get("value") is not None and _ann["type"] == "hline":
+                        _ann_desc += f' y={_ann["value"]}'
+
+                    _ann_col1, _ann_col2, _ann_col3 = st.columns([5, 1, 1])
+                    with _ann_col1:
+                        st.caption(_ann_desc)
+                    with _ann_col2:
+                        with st.popover("🎨", use_container_width=True, help="Style"):
+                            _ast = _ann.get("style", {})
+                            _ann_dash = st.selectbox(
+                                "Line dash", ["dot", "solid", "dash", "dashdot"],
+                                index=["dot", "solid", "dash", "dashdot"].index(_ast.get("line_dash", "dot")),
+                                key=f"cb_ann_dash_{_ai}",
+                            )
+                            _ann_color = st.color_picker("Color", value=_ast.get("line_color", "#9EA3AB"), key=f"cb_ann_color_{_ai}")
+                            _ann_lw = st.slider("Line width", 0.5, 5.0, value=float(_ast.get("line_width", 1.5)), step=0.5, key=f"cb_ann_lw_{_ai}")
+                            _ann_fs = st.slider("Font size", 8, 20, value=int(_ast.get("font_size", 11)), key=f"cb_ann_fs_{_ai}")
+                            _ann["style"] = {
+                                "line_dash": _ann_dash,
+                                "line_color": _ann_color,
+                                "line_width": _ann_lw,
+                                "font_size": _ann_fs,
+                            }
+                    with _ann_col3:
+                        if st.button("🗑", key=f"cb_ann_del_{_ai}", help="Delete"):
+                            st.session_state.cb_annotations.pop(_ai)
+                            st.rerun()
+
         # ── Chart render ──────────────────────────────────────────────────
         if cb_series:
             _valid = [_s for _s in cb_series if _s["label"] in cb_data]
@@ -1081,6 +1199,7 @@ def _render_chart_edit():
                     _range_end = datetime.today()
                     _range_start = _range_end - timedelta(days=_default_range_years * 365)
                     fig.update_layout(xaxis=dict(range=[_range_start.strftime("%Y-%m-%d"), _range_end.strftime("%Y-%m-%d")]))
+                apply_annotations(fig, cb_annotations)
                 st.plotly_chart(fig, use_container_width=True)
 
         # ── Save bar (Chart) — always visible ─────────────────────────────
@@ -1131,6 +1250,7 @@ def _render_chart_edit():
                     "show_legend": st.session_state.get("cb_show_legend", True),
                     "default_range_years": _default_range_years if _default_range_years else None,
                     "series": list(cb_series),
+                    "annotations": list(st.session_state.cb_annotations),
                 }
                 if st.session_state.cb_item_id:
                     _item_dict["id"] = st.session_state.cb_item_id
@@ -1140,6 +1260,7 @@ def _render_chart_edit():
                 st.session_state.cb_item_id = None
                 st.session_state.cb_series = []
                 st.session_state.cb_data = {}
+                st.session_state.cb_annotations = []
                 st.session_state.pop("cb_chart_title", None)
                 st.toast("Chart saved")
                 st.rerun()
@@ -1163,6 +1284,7 @@ def _render_chart_edit():
                         "show_legend": st.session_state.get("cb_show_legend", True),
                         "default_range_years": _default_range_years if _default_range_years else None,
                         "series": list(cb_series),
+                        "annotations": list(st.session_state.cb_annotations),
                         # no "id" — forces upsert_item to create a new item
                     }
                     _saved_id = upsert_item(_item_dict_new)
@@ -1171,6 +1293,7 @@ def _render_chart_edit():
                     st.session_state.cb_item_id = None
                     st.session_state.cb_series = []
                     st.session_state.cb_data = {}
+                    st.session_state.cb_annotations = []
                     st.session_state.pop("cb_chart_title", None)
                     st.toast("Saved as new chart")
                     st.rerun()
