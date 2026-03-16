@@ -94,6 +94,7 @@ _dynamic_dashboards = list_dynamic_dashboards()
 _dynamic_page_map = {cfg["title"]: cfg for cfg in _dynamic_dashboards}
 
 _DASHBOARD_PAGES = [cfg["title"] for cfg in _dynamic_dashboards]
+_CONTENT_PAGES = ["Content Composer", "House View", "Chart Curator", "Chart Library", "News Reader"]
 _TOOL_PAGES = ["Data Explorer", "Feed Manager", "Chart Builder", "Dashboard Builder", "Tag Manager", "Regression & Analysis", "Data Table"]
 
 if "page" not in st.session_state:
@@ -165,6 +166,22 @@ with st.sidebar:
     st.markdown(
         "<p style='color:#888;font-size:0.72rem;font-weight:700;"
         "letter-spacing:0.08em;text-transform:uppercase;margin:14px 0 6px'>"
+        "Content</p>",
+        unsafe_allow_html=True,
+    )
+    for _p in _CONTENT_PAGES:
+        if st.button(
+            _p,
+            key=f"nav_{_p}",
+            use_container_width=True,
+            type="primary" if st.session_state.page == _p else "secondary",
+        ):
+            st.session_state.page = _p
+            st.rerun()
+
+    st.markdown(
+        "<p style='color:#888;font-size:0.72rem;font-weight:700;"
+        "letter-spacing:0.08em;text-transform:uppercase;margin:14px 0 6px'>"
         "Tools</p>",
         unsafe_allow_html=True,
     )
@@ -194,7 +211,27 @@ page = st.session_state.page
 # PAGE: DYNAMIC DASHBOARDS
 # =============================================================================
 
-if page in _dynamic_page_map:
+if page == "Chart Curator":
+    from views.chart_curator import render as render_curator
+    render_curator()
+
+elif page == "Chart Library":
+    from views.chart_library import render as render_chart_library
+    render_chart_library()
+
+elif page == "News Reader":
+    from views.news_reader import render as render_news_reader
+    render_news_reader()
+
+elif page == "Content Composer":
+    from views.content_composer import render as render_content_composer
+    render_content_composer()
+
+elif page == "House View":
+    from views.house_view import render as render_house_view
+    render_house_view()
+
+elif page in _dynamic_page_map:
     render_dynamic(_dynamic_page_map[page])
 
 
